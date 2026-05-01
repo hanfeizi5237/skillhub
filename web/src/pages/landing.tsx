@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 import { normalizeSearchQuery } from '@/shared/lib/search-query'
@@ -8,6 +9,9 @@ import { SkeletonList } from '@/shared/components/skeleton-loader'
 import { useSearchSkills } from '@/shared/hooks/use-skill-queries'
 import { useInView } from '@/shared/hooks/use-in-view'
 import { Button } from '@/shared/ui/button'
+import { fetchJson } from '@/api/client'
+import type { Namespace, PagedResponse, SkillSummary } from '@/api/types'
+import { buildSkillSearchUrl } from '@/shared/hooks/skill-query-helpers'
 
 /**
  * Marketing-style landing page for unauthenticated and first-time visitors.
@@ -15,6 +19,54 @@ import { Button } from '@/shared/ui/button'
  * The page mixes static positioning content with live skill queries so popular and latest skills
  * stay aligned with the current registry state.
  */
+type LandingStats = {
+  skills: number
+  downloads: number
+  teams: number
+}
+
+const LANDING_STATS_PAGE_SIZE = 100
+
+function formatLandingStat(value: number): string {
+  return new Intl.NumberFormat('en-US').format(value)
+}
+
+async function fetchLandingStats(): Promise<LandingStats> {
+  const firstPage = await fetchJson<PagedResponse<SkillSummary>>(buildSkillSearchUrl({
+    sort: 'newest',
+    page: 0,
+    size: LANDING_STATS_PAGE_SIZE,
+  }))
+
+  let downloads = firstPage.items.reduce((sum, item) => sum + (item.downloadCount ?? 0), 0)
+  const skillTotal = firstPage.total
+  const skillPages = Math.ceil(skillTotal / LANDING_STATS_PAGE_SIZE)
+
+  for (let page = 1; page < skillPages; page += 1) {
+    const response = await fetchJson<PagedResponse<SkillSummary>>(buildSkillSearchUrl({
+      sort: 'newest',
+      page,
+      size: LANDING_STATS_PAGE_SIZE,
+    }))
+    downloads += response.items.reduce((sum, item) => sum + (item.downloadCount ?? 0), 0)
+  }
+
+  const firstNamespacePage = await fetchJson<PagedResponse<Namespace>>(`/api/v1/namespaces?page=0&size=${LANDING_STATS_PAGE_SIZE}`)
+  let teams = firstNamespacePage.items.filter((item) => item.type === 'TEAM').length
+  const namespacePages = Math.ceil(firstNamespacePage.total / LANDING_STATS_PAGE_SIZE)
+
+  for (let page = 1; page < namespacePages; page += 1) {
+    const response = await fetchJson<PagedResponse<Namespace>>(`/api/v1/namespaces?page=${page}&size=${LANDING_STATS_PAGE_SIZE}`)
+    teams += response.items.filter((item) => item.type === 'TEAM').length
+  }
+
+  return {
+    skills: skillTotal,
+    downloads,
+    teams,
+  }
+}
+
 export function LandingPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
@@ -32,6 +84,27 @@ export function LandingPage() {
   const handleSkillClick = (namespace: string, slug: string) => {
     navigate({ to: `/space/${namespace}/${encodeURIComponent(slug)}` })
   }
+
+  const [landingStats, setLandingStats] = useState<LandingStats | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    // Keep the landing metrics aligned with the registry instead of showing fixed marketing numbers.
+    fetchLandingStats()
+      .then((stats) => {
+        if (!cancelled) {
+          setLandingStats(stats)
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to load landing stats:', error)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const heroView = useInView()
   const statsView = useInView()
@@ -82,9 +155,9 @@ export function LandingPage() {
   ]
 
   const stats = [
-    { value: '1000+', label: t('landing.stats.skills', { defaultValue: 'Registry items' }) },
-    { value: '50K+', label: t('landing.stats.downloads', { defaultValue: 'Downloads' }) },
-    { value: '200+', label: t('landing.stats.teams', { defaultValue: 'Teams' }) },
+    { value: landingStats ? formatLandingStat(landingStats.skills) : '--', label: t('landing.stats.skills', { defaultValue: 'Registry items' }) },
+    { value: landingStats ? formatLandingStat(landingStats.downloads) : '--', label: t('landing.stats.downloads', { defaultValue: 'Downloads' }) },
+    { value: landingStats ? formatLandingStat(landingStats.teams) : '--', label: t('landing.stats.teams', { defaultValue: 'Teams' }) },
   ]
 
   return (

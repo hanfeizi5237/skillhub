@@ -15,6 +15,7 @@ public class SkillPublishProperties {
     private long maxSingleFileSize = 10 * 1024 * 1024;  // 10MB
     private long maxPackageSize = 100 * 1024 * 1024;
     private Set<String> allowedFileExtensions = new LinkedHashSet<>(SkillPackagePolicy.ALLOWED_EXTENSIONS);
+    private Set<String> allowedExtraFileExtensions = new LinkedHashSet<>();
 
     public int getMaxFileCount() {
         return maxFileCount;
@@ -41,10 +42,24 @@ public class SkillPublishProperties {
     }
 
     public Set<String> getAllowedFileExtensions() {
-        return allowedFileExtensions;
+        LinkedHashSet<String> merged = new LinkedHashSet<>(allowedFileExtensions);
+        merged.addAll(allowedExtraFileExtensions);
+        return merged;
     }
 
     public void setAllowedFileExtensions(Set<String> allowedFileExtensions) {
-        this.allowedFileExtensions = new LinkedHashSet<>(allowedFileExtensions);
+        this.allowedFileExtensions = allowedFileExtensions == null
+                ? new LinkedHashSet<>(SkillPackagePolicy.ALLOWED_EXTENSIONS)
+                : new LinkedHashSet<>(allowedFileExtensions);
+    }
+
+    public Set<String> getAllowedExtraFileExtensions() {
+        return allowedExtraFileExtensions;
+    }
+
+    public void setAllowedExtraFileExtensions(Set<String> allowedExtraFileExtensions) {
+        this.allowedExtraFileExtensions = allowedExtraFileExtensions == null
+                ? new LinkedHashSet<>()
+                : new LinkedHashSet<>(allowedExtraFileExtensions);
     }
 }

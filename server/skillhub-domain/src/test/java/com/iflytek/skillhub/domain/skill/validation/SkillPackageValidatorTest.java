@@ -53,6 +53,36 @@ class SkillPackageValidatorTest {
     }
 
     @Test
+    void testCustomAllowedExtension() {
+        SkillPackageValidator customValidator = new SkillPackageValidator(
+                new SkillMetadataParser(),
+                SkillPackagePolicy.MAX_FILE_COUNT,
+                SkillPackagePolicy.MAX_SINGLE_FILE_SIZE,
+                SkillPackagePolicy.MAX_TOTAL_PACKAGE_SIZE,
+                java.util.Set.of(".md", ".rules")
+        );
+
+        String skillMdContent = """
+            ---
+            name: test-skill
+            description: A test skill
+            version: 1.0.0
+            ---
+            Body
+            """;
+
+        List<PackageEntry> entries = List.of(
+                new PackageEntry("SKILL.md", skillMdContent.getBytes(), skillMdContent.length(), "text/markdown"),
+                new PackageEntry("references/rules/functions.rules", "when x then y".getBytes(), 13, "text/plain")
+        );
+
+        ValidationResult result = customValidator.validate(entries);
+
+        assertTrue(result.passed());
+        assertTrue(result.errors().isEmpty());
+    }
+
+    @Test
     void testDisallowedExtension() {
         String skillMdContent = """
             ---

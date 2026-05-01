@@ -112,8 +112,9 @@ skillhub:
     max-file-count: 100
     max-single-file-size: 10485760 # 10MB
     max-package-size: 104857600 # 100MB
-    # allowed-file-extensions: uses SkillPackagePolicy.ALLOWED_EXTENSIONS by default
-    # Override via SKILLHUB_PUBLISH_ALLOWED_FILE_EXTENSIONS env var if needed
+    # allowed-file-extensions: full override list, defaults to SkillPackagePolicy.ALLOWED_EXTENSIONS
+    # allowed-extra-file-extensions: append custom suffixes on top of defaults (for example .rules)
+    # Override via SKILLHUB_PUBLISH_ALLOWED_FILE_EXTENSIONS or append via SKILLHUB_PUBLISH_ALLOWED_EXTRA_FILE_EXTENSIONS
   profile:
     moderation:
       machine-review: ${SKILLHUB_PROFILE_MACHINE_REVIEW_ENABLED:true} # Enable machine review (e.g. sensitive word detection)
