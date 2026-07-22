@@ -1,10 +1,13 @@
 package com.iflytek.skillhub.service;
 
+import com.iflytek.skillhub.domain.namespace.Namespace;
+import com.iflytek.skillhub.domain.namespace.NamespaceRepository;
 import com.iflytek.skillhub.domain.skill.Skill;
 import com.iflytek.skillhub.domain.skill.SkillRepository;
 import com.iflytek.skillhub.domain.skill.SkillVersionRepository;
 import com.iflytek.skillhub.domain.skill.service.SkillLifecycleProjectionService;
 import com.iflytek.skillhub.domain.social.SkillStarRepository;
+import com.iflytek.skillhub.domain.social.SkillSubscriptionRepository;
 import com.iflytek.skillhub.dto.PageResponse;
 import com.iflytek.skillhub.dto.SkillSummaryResponse;
 import com.iflytek.skillhub.repository.MySkillQueryRepository;
@@ -32,24 +35,30 @@ public class MySkillAppService {
     private final SkillRepository skillRepository;
     private final SkillVersionRepository skillVersionRepository;
     private final SkillStarRepository skillStarRepository;
+    private final SkillSubscriptionRepository skillSubscriptionRepository;
     private final MySkillQueryRepository mySkillQueryRepository;
     private final SkillLifecycleProjectionService skillLifecycleProjectionService;
+    private final NamespaceRepository namespaceRepository;
 
     public MySkillAppService(
             SkillRepository skillRepository,
             SkillVersionRepository skillVersionRepository,
             SkillStarRepository skillStarRepository,
+            SkillSubscriptionRepository skillSubscriptionRepository,
             MySkillQueryRepository mySkillQueryRepository,
-            SkillLifecycleProjectionService skillLifecycleProjectionService) {
+            SkillLifecycleProjectionService skillLifecycleProjectionService,
+            NamespaceRepository namespaceRepository) {
         this.skillRepository = skillRepository;
         this.skillVersionRepository = skillVersionRepository;
         this.skillStarRepository = skillStarRepository;
+        this.skillSubscriptionRepository = skillSubscriptionRepository;
         this.mySkillQueryRepository = mySkillQueryRepository;
         this.skillLifecycleProjectionService = skillLifecycleProjectionService;
+        this.namespaceRepository = namespaceRepository;
     }
 
     public PageResponse<SkillSummaryResponse> listMySkills(String userId, int page, int size) {
-        return listMySkills(userId, page, size, null, java.util.Set.of());
+        return listMySkills(userId, page, size, null, null, null, java.util.Set.of());
     }
 
     public PageResponse<SkillSummaryResponse> listMySkills(String userId,
@@ -57,10 +66,27 @@ public class MySkillAppService {
                                                            int size,
                                                            String filter,
                                                            java.util.Set<String> platformRoles) {
+        return listMySkills(userId, page, size, filter, null, null, platformRoles);
+    }
+
+    public PageResponse<SkillSummaryResponse> listMySkills(String userId,
+                                                           int page,
+                                                           int size,
+                                                           String filter,
+                                                           String keyword,
+                                                           String namespace,
+                                                           java.util.Set<String> platformRoles) {
         MySkillFilter normalizedFilter = parseFilter(filter);
-        Page<Skill> skillPage = normalizedFilter == MySkillFilter.ALL
-                ? skillRepository.findByOwnerId(userId, PageRequest.of(page, size))
-                : filterSkillsByLifecycle(userId, page, size, normalizedFilter, platformRoles);
+
+        Page<Skill> skillPage;
+        if (normalizedFilter == MySkillFilter.ALL
+                && (keyword == null || keyword.isBlank())
+                && (namespace == null || namespace.isBlank())) {
+            skillPage = skillRepository.findByOwnerId(userId, PageRequest.of(page, size));
+        } else {
+            skillPage = filterSkills(userId, page, size, normalizedFilter, keyword, namespace, platformRoles);
+        }
+
         List<SkillSummaryResponse> items = mySkillQueryRepository.getSkillSummaries(skillPage.getContent(), userId);
 
         return new PageResponse<>(items, skillPage.getTotalElements(), skillPage.getNumber(), skillPage.getSize());
@@ -90,15 +116,58 @@ public class MySkillAppService {
         return new PageResponse<>(items, starPage.getTotalElements(), starPage.getNumber(), starPage.getSize());
     }
 
-    private Page<Skill> filterSkillsByLifecycle(String userId,
-                                                int page,
-                                                int size,
-                                                MySkillFilter filter,
-                                                java.util.Set<String> platformRoles) {
+    public PageResponse<SkillSummaryResponse> listMySubscriptions(String userId, int page, int size) {
+        Page<com.iflytek.skillhub.domain.social.SkillSubscription> subPage = skillSubscriptionRepository.findByUserId(
+                userId,
+                PageRequest.of(page, size)
+        );
+        List<com.iflytek.skillhub.domain.social.SkillSubscription> subs = subPage.getContent();
+
+        List<Long> skillIds = subs.stream()
+                .map(com.iflytek.skillhub.domain.social.SkillSubscription::getSkillId)
+                .distinct()
+                .toList();
+        java.util.Map<Long, Skill> skillsById = skillIds.isEmpty()
+                ? java.util.Map.of()
+                : skillRepository.findByIdIn(skillIds).stream()
+                        .collect(java.util.stream.Collectors.toMap(Skill::getId, java.util.function.Function.identity()));
+        List<Skill> orderedSkills = subs.stream()
+                .map(sub -> skillsById.get(sub.getSkillId()))
+                .filter(java.util.Objects::nonNull)
+                .toList();
+        List<SkillSummaryResponse> items = mySkillQueryRepository.getSkillSummaries(orderedSkills, userId);
+
+        return new PageResponse<>(items, subPage.getTotalElements(), subPage.getNumber(), subPage.getSize());
+    }
+
+    private Page<Skill> filterSkills(String userId,
+                                     int page,
+                                     int size,
+                                     MySkillFilter filter,
+                                     String keyword,
+                                     String namespace,
+                                     java.util.Set<String> platformRoles) {
         List<Skill> skills = skillRepository.findByOwnerId(userId);
+
+        // Namespace filter
+        Long namespaceId = null;
+        if (namespace != null && !namespace.isBlank()) {
+            namespaceId = namespaceRepository.findBySlug(namespace.trim())
+                    .map(Namespace::getId)
+                    .orElse(-1L);
+        }
+
+        final Long finalNamespaceId = namespaceId;
+        String normalizedKeyword = keyword != null && !keyword.isBlank()
+                ? keyword.trim().toLowerCase(java.util.Locale.ROOT)
+                : null;
+
         List<Skill> filtered = skills.stream()
+                .filter(skill -> matchesNamespace(skill, finalNamespaceId))
+                .filter(skill -> matchesKeyword(skill, normalizedKeyword))
                 .filter(skill -> matchesFilter(skill, filter, platformRoles))
                 .toList();
+
         int fromIndex = Math.min(page * size, filtered.size());
         int toIndex = Math.min(fromIndex + size, filtered.size());
         return new PageImpl<>(
@@ -106,6 +175,35 @@ public class MySkillAppService {
                 PageRequest.of(page, size),
                 filtered.size()
         );
+    }
+
+    private boolean matchesNamespace(Skill skill, Long namespaceId) {
+        if (namespaceId == null) {
+            return true;
+        }
+        if (namespaceId == -1L) {
+            return false;
+        }
+        return skill.getNamespaceId().equals(namespaceId);
+    }
+
+    private boolean matchesKeyword(Skill skill, String keyword) {
+        if (keyword == null) {
+            return true;
+        }
+        String displayName = skill.getDisplayName() != null ? skill.getDisplayName().toLowerCase(java.util.Locale.ROOT) : "";
+        String slug = skill.getSlug() != null ? skill.getSlug().toLowerCase(java.util.Locale.ROOT) : "";
+        String summary = skill.getSummary() != null ? skill.getSummary().toLowerCase(java.util.Locale.ROOT) : "";
+
+        return displayName.contains(keyword) || slug.contains(keyword) || summary.contains(keyword);
+    }
+
+    private Page<Skill> filterSkillsByLifecycle(String userId,
+                                                int page,
+                                                int size,
+                                                MySkillFilter filter,
+                                                java.util.Set<String> platformRoles) {
+        return filterSkills(userId, page, size, filter, null, null, platformRoles);
     }
 
     private boolean matchesFilter(Skill skill, MySkillFilter filter, java.util.Set<String> platformRoles) {

@@ -6,6 +6,8 @@ const navigateMock = vi.fn()
 const useSearchMock = vi.fn()
 const buttonRecords: Array<{ label: string; variant?: string | null; onClick?: (() => void) | undefined }> = []
 const paginationProps: Array<{ onPageChange: (page: number) => void }> = []
+const searchBarProps: Array<{ value?: string; onSearch?: (query: string) => void }> = []
+const searchSkillParams: Array<Record<string, unknown>> = []
 
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => navigateMock,
@@ -34,7 +36,10 @@ vi.mock('@/features/auth/use-auth', () => ({
 }))
 
 vi.mock('@/features/search/search-bar', () => ({
-  SearchBar: () => <div>search-bar</div>,
+  SearchBar: (props: { value?: string; onSearch?: (query: string) => void }) => {
+    searchBarProps.push(props)
+    return <div>search-bar</div>
+  },
 }))
 
 vi.mock('@/features/skill/skill-card', () => ({
@@ -46,7 +51,13 @@ vi.mock('@/shared/components/skeleton-loader', () => ({
 }))
 
 vi.mock('@/shared/components/empty-state', () => ({
-  EmptyState: () => <div>empty-state</div>,
+  EmptyState: ({ title, description }: { title: string; description?: string }) => (
+    <div>
+      empty-state
+      <span>{title}</span>
+      {description ? <span>{description}</span> : null}
+    </div>
+  ),
 }))
 
 vi.mock('@/shared/components/pagination', () => ({
@@ -79,7 +90,10 @@ vi.mock('@/app/page-shell-style', () => ({
 const useSearchSkillsMock = vi.fn()
 
 vi.mock('@/shared/hooks/use-skill-queries', () => ({
-  useSearchSkills: () => useSearchSkillsMock(),
+  useSearchSkills: (params: Record<string, unknown>) => {
+    searchSkillParams.push(params)
+    return useSearchSkillsMock()
+  },
 }))
 
 vi.mock('@/shared/hooks/use-label-queries', () => ({
@@ -114,8 +128,11 @@ describe('SearchPage', () => {
     navigateMock.mockReset()
     buttonRecords.length = 0
     paginationProps.length = 0
+    searchBarProps.length = 0
+    searchSkillParams.length = 0
     useSearchMock.mockReturnValue({
       q: 'agent',
+      namespace: 'team-ai',
       label: 'code-generation',
       sort: 'downloads',
       page: 1,
@@ -150,6 +167,7 @@ describe('SearchPage', () => {
       to: '/search',
       search: {
         q: 'agent',
+        namespace: 'team-ai',
         label: '',
         sort: 'downloads',
         page: 0,
@@ -167,6 +185,7 @@ describe('SearchPage', () => {
       to: '/search',
       search: {
         q: 'agent',
+        namespace: 'team-ai',
         label: 'code-generation',
         sort: 'newest',
         page: 0,
@@ -185,6 +204,7 @@ describe('SearchPage', () => {
       to: '/search',
       search: {
         q: 'agent',
+        namespace: 'team-ai',
         label: 'code-generation',
         sort: 'downloads',
         page: 2,
@@ -195,11 +215,95 @@ describe('SearchPage', () => {
       to: '/search',
       search: {
         q: 'agent',
+        namespace: 'team-ai',
         label: 'code-generation',
         sort: 'downloads',
         page: 0,
         starredOnly: true,
       },
     })
+  })
+
+  it('passes the namespace URL state into skill search', () => {
+    renderToStaticMarkup(<SearchPage />)
+
+    expect(searchSkillParams[0]).toMatchObject({
+      q: 'agent',
+      namespace: 'team-ai',
+      label: 'code-generation',
+      sort: 'downloads',
+      page: 1,
+      size: 12,
+    })
+  })
+
+  it('extracts a leading namespace token from the search input', () => {
+    renderToStaticMarkup(<SearchPage />)
+
+    searchBarProps[0]?.onSearch?.('@product-team onboarding')
+
+    expect(navigateMock).toHaveBeenCalledWith({
+      to: '/search',
+      search: {
+        q: 'onboarding',
+        namespace: 'product-team',
+        label: 'code-generation',
+        sort: 'downloads',
+        page: 0,
+        starredOnly: false,
+      },
+      replace: true,
+    })
+  })
+
+  it('renders the default skill list when the empty query still returns items', () => {
+    useSearchMock.mockReturnValue({
+      q: '',
+      label: '',
+      sort: 'newest',
+      page: 0,
+      starredOnly: false,
+    })
+    useSearchSkillsMock.mockReturnValue({
+      data: {
+        items: [{ id: 1, displayName: 'Demo Skill', summary: 'summary', namespace: 'global', slug: 'demo', downloadCount: 1, starCount: 1, ratingCount: 0, updatedAt: '2026-03-20T00:00:00Z', canSubmitPromotion: false }],
+        total: 1,
+        page: 0,
+        size: 12,
+      },
+      isLoading: false,
+      isFetching: false,
+    })
+
+    const html = renderToStaticMarkup(<SearchPage />)
+
+    expect(html).toContain('skill-card')
+    expect(html).not.toContain('empty-state')
+  })
+
+  it('shows a generic empty state when the default discovery list is empty', () => {
+    useSearchMock.mockReturnValue({
+      q: '',
+      label: '',
+      sort: 'newest',
+      page: 0,
+      starredOnly: false,
+    })
+    useSearchSkillsMock.mockReturnValue({
+      data: {
+        items: [],
+        total: 0,
+        page: 0,
+        size: 12,
+      },
+      isLoading: false,
+      isFetching: false,
+    })
+
+    const html = renderToStaticMarkup(<SearchPage />)
+
+    expect(html).toContain('empty-state')
+    expect(html).toContain('search.noResults')
+    expect(html).not.toContain('search.enterKeyword')
   })
 })

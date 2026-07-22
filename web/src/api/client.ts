@@ -2,6 +2,8 @@ import createClient from 'openapi-fetch'
 import type { paths } from './generated/schema'
 import type {
   ChangePasswordRequest,
+  PasswordResetConfirmRequest,
+  PasswordResetRequest,
   ApiToken,
   CreateTokenRequest,
   CreateTokenResponse,
@@ -13,6 +15,9 @@ import type {
   MergeVerifyRequest,
   ReviewSkillDetail,
   ReviewTask,
+  PromotionSortBy,
+  PromotionSortDirection,
+  PromotionStatus,
   PromotionTask,
   AuditLogItem,
   SkillSummary,
@@ -38,6 +43,7 @@ import type {
   AdminLabelInput,
   LabelDefinition,
   LabelItem,
+  BatchMemberResponse,
 } from './types'
 import { ApiError } from '@/shared/lib/api-error'
 import i18n from '@/i18n/config'
@@ -252,7 +258,7 @@ function withBaseUrl(input: RequestInfo | URL): RequestInfo | URL {
   if (!baseUrl || typeof input !== 'string' || !input.startsWith('/')) {
     return input
   }
-  return new URL(input, ensureTrailingSlash(baseUrl))
+  return prependApiBaseUrl(baseUrl, input)
 }
 
 export function buildApiUrl(path: string): string {
@@ -260,11 +266,20 @@ export function buildApiUrl(path: string): string {
   if (!baseUrl) {
     return path
   }
-  return new URL(path, ensureTrailingSlash(baseUrl)).toString()
+  return prependApiBaseUrl(baseUrl, path)
 }
 
-function ensureTrailingSlash(value: string): string {
-  return value.endsWith('/') ? value : `${value}/`
+function prependApiBaseUrl(baseUrl: string, path: string): string {
+  const normalizedBaseUrl = trimTrailingSlash(baseUrl)
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  return `${normalizedBaseUrl}${normalizedPath}`
+}
+
+function trimTrailingSlash(value: string): string {
+  if (value.length > 1 && value.endsWith('/')) {
+    return value.slice(0, -1)
+  }
+  return value
 }
 
 export async function getCurrentUser(): Promise<User | null> {
@@ -337,6 +352,26 @@ export const authApi = {
 
   async changePassword(request: ChangePasswordRequest): Promise<void> {
     await fetchJson<void>('/api/v1/auth/local/change-password', {
+      method: 'POST',
+      headers: await ensureCsrfHeaders({
+        'Content-Type': 'application/json',
+      }),
+      body: JSON.stringify(request),
+    })
+  },
+
+  async requestPasswordReset(request: PasswordResetRequest): Promise<void> {
+    await fetchJson<void>('/api/v1/auth/local/password-reset/request', {
+      method: 'POST',
+      headers: await ensureCsrfHeaders({
+        'Content-Type': 'application/json',
+      }),
+      body: JSON.stringify(request),
+    })
+  },
+
+  async confirmPasswordReset(request: PasswordResetConfirmRequest): Promise<void> {
+    await fetchJson<void>('/api/v1/auth/local/password-reset/confirm', {
       method: 'POST',
       headers: await ensureCsrfHeaders({
         'Content-Type': 'application/json',
@@ -457,14 +492,44 @@ export const skillLifecycleApi = {
     })
   },
 
-  async rereleaseVersion(namespace: string, slug: string, version: string, targetVersion: string): Promise<void> {
+  async rereleaseVersion(namespace: string, slug: string, version: string, targetVersion: string, confirmWarnings = false): Promise<void> {
     const cleanNamespace = namespace.startsWith('@') ? namespace.slice(1) : namespace
     await fetchJson<void>(`${WEB_API_PREFIX}/skills/${cleanNamespace}/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}/rerelease`, {
       method: 'POST',
       headers: await ensureCsrfHeaders({
         'Content-Type': 'application/json',
       }),
-      body: JSON.stringify({ targetVersion }),
+      body: JSON.stringify({ targetVersion, confirmWarnings }),
+    })
+  },
+
+  /**
+   * Submit an UPLOADED version for review.
+   * Transitions version status from UPLOADED to PENDING_REVIEW.
+   */
+  async submitForReview(namespace: string, slug: string, version: string, targetVisibility: 'PUBLIC' | 'NAMESPACE_ONLY'): Promise<void> {
+    const cleanNamespace = namespace.startsWith('@') ? namespace.slice(1) : namespace
+    await fetchJson<void>(`${WEB_API_PREFIX}/skills/${cleanNamespace}/${encodeURIComponent(slug)}/submit-review`, {
+      method: 'POST',
+      headers: await ensureCsrfHeaders({
+        'Content-Type': 'application/json',
+      }),
+      body: JSON.stringify({ version, targetVisibility }),
+    })
+  },
+
+  /**
+   * Confirm publish for a PRIVATE skill version.
+   * Transitions version status from UPLOADED to PUBLISHED without review.
+   */
+  async confirmPublish(namespace: string, slug: string, version: string): Promise<void> {
+    const cleanNamespace = namespace.startsWith('@') ? namespace.slice(1) : namespace
+    await fetchJson<void>(`${WEB_API_PREFIX}/skills/${cleanNamespace}/${encodeURIComponent(slug)}/confirm-publish`, {
+      method: 'POST',
+      headers: await ensureCsrfHeaders({
+        'Content-Type': 'application/json',
+      }),
+      body: JSON.stringify({ version }),
     })
   },
 }
@@ -613,9 +678,19 @@ export const namespaceApi = {
     })
   },
 
-  async listMembers(slug: string): Promise<NamespaceMember[]> {
-    const page = await fetchJson<{ items: NamespaceMember[] }>(`${WEB_API_PREFIX}/namespaces/${normalizeNamespaceSlug(slug)}/members`)
-    return page.items
+  async delete(slug: string): Promise<void> {
+    await fetchJson<void>(`${WEB_API_PREFIX}/namespaces/${normalizeNamespaceSlug(slug)}`, {
+      method: 'DELETE',
+      headers: await ensureCsrfHeaders(),
+    })
+  },
+
+  async listMembers(slug: string, params?: { page?: number; size?: number }): Promise<PagedResponse<NamespaceMember>> {
+    const queryPage = params?.page ?? 0
+    const querySize = params?.size ?? 20
+    return fetchJson<PagedResponse<NamespaceMember>>(
+      `${WEB_API_PREFIX}/namespaces/${normalizeNamespaceSlug(slug)}/members?page=${queryPage}&size=${querySize}`,
+    )
   },
 
   async searchMemberCandidates(slug: string, search: string, size = 10): Promise<NamespaceCandidateUser[]> {
@@ -641,6 +716,16 @@ export const namespaceApi = {
     })
   },
 
+  async batchAddMembers(slug: string, members: Array<{ userId: string; role: string }>): Promise<BatchMemberResponse> {
+    return fetchJson<BatchMemberResponse>(`${WEB_API_PREFIX}/namespaces/${normalizeNamespaceSlug(slug)}/members/batch`, {
+      method: 'POST',
+      headers: await ensureCsrfHeaders({
+        'Content-Type': 'application/json',
+      }),
+      body: JSON.stringify({ members }),
+    })
+  },
+
   async updateMemberRole(slug: string, userId: string, role: string): Promise<NamespaceMember> {
     return fetchJson<NamespaceMember>(
       `${WEB_API_PREFIX}/namespaces/${normalizeNamespaceSlug(slug)}/members/${encodeURIComponent(userId)}/role`,
@@ -658,6 +743,33 @@ export const namespaceApi = {
     await fetchJson<void>(`${WEB_API_PREFIX}/namespaces/${normalizeNamespaceSlug(slug)}/members/${encodeURIComponent(userId)}`, {
       method: 'DELETE',
       headers: await ensureCsrfHeaders(),
+    })
+  },
+
+  async update(slug: string, request: { displayName?: string; description?: string }): Promise<Namespace> {
+    const body: Record<string, string> = {}
+    if (request.displayName !== undefined) {
+      body.displayName = request.displayName.trim()
+    }
+    if (request.description !== undefined) {
+      body.description = request.description === '' ? '' : request.description.trim()
+    }
+    return fetchJson<Namespace>(`/api/v1/namespaces/${normalizeNamespaceSlug(slug)}`, {
+      method: 'PUT',
+      headers: await ensureCsrfHeaders({
+        'Content-Type': 'application/json',
+      }),
+      body: JSON.stringify(body),
+    })
+  },
+
+  async transferOwnership(slug: string, newOwnerUserId: string): Promise<{ message: string }> {
+    return fetchJson<{ message: string }>(`${WEB_API_PREFIX}/namespaces/${normalizeNamespaceSlug(slug)}/transfer-ownership`, {
+      method: 'POST',
+      headers: await ensureCsrfHeaders({
+        'Content-Type': 'application/json',
+      }),
+      body: JSON.stringify({ newOwnerId: newOwnerUserId.trim() }),
     })
   },
 }
@@ -790,11 +902,17 @@ export const promotionApi = {
     })
   },
 
-  async list(params: { status?: string; page?: number; size?: number }) {
+  async list(params: { status?: PromotionStatus; page?: number; size?: number; sortBy?: PromotionSortBy; sortDirection?: PromotionSortDirection }) {
     const searchParams = new URLSearchParams()
     searchParams.set('status', params.status ?? 'PENDING')
     searchParams.set('page', String(params.page ?? 0))
     searchParams.set('size', String(params.size ?? 20))
+    if (params.sortBy) {
+      searchParams.set('sortBy', params.sortBy)
+    }
+    if (params.sortDirection) {
+      searchParams.set('sortDirection', params.sortDirection)
+    }
     return fetchJson<{ items: PromotionTask[]; total: number; page: number; size: number }>(
       `${WEB_API_PREFIX}/promotions?${searchParams.toString()}`,
     )
@@ -915,12 +1033,18 @@ export const governanceApi = {
 }
 
 export const meApi = {
-  async getSkills(params?: { page?: number; size?: number; filter?: string }): Promise<{ items: SkillSummary[]; total: number; page: number; size: number }> {
+  async getSkills(params?: { page?: number; size?: number; filter?: string; q?: string; namespace?: string }): Promise<{ items: SkillSummary[]; total: number; page: number; size: number }> {
     const searchParams = new URLSearchParams()
     searchParams.set('page', String(params?.page ?? 0))
     searchParams.set('size', String(params?.size ?? 10))
     if (params?.filter) {
       searchParams.set('filter', params.filter)
+    }
+    if (params?.q) {
+      searchParams.set('q', params.q)
+    }
+    if (params?.namespace) {
+      searchParams.set('namespace', params.namespace)
     }
     return fetchJson<{ items: SkillSummary[]; total: number; page: number; size: number }>(`${WEB_API_PREFIX}/me/skills?${searchParams.toString()}`)
   },
@@ -944,6 +1068,30 @@ export const meApi = {
 
       hasMore = (page + 1) * response.size < response.total && response.items.length > 0
       page += 1
+    }
+
+    return items
+  },
+
+  async getSubscriptionsPage(params?: { page?: number; size?: number }): Promise<{ items: SkillSummary[]; total: number; page: number; size: number }> {
+    const searchParams = new URLSearchParams()
+    searchParams.set('page', String(params?.page ?? 0))
+    searchParams.set('size', String(params?.size ?? 12))
+    return fetchJson<{ items: SkillSummary[]; total: number; page: number; size: number }>(`${WEB_API_PREFIX}/me/subscriptions?${searchParams.toString()}`)
+  },
+
+  async getSubscriptions(): Promise<SkillSummary[]> {
+    const items: SkillSummary[] = []
+    let page = 0
+    const size = 100
+    let hasMore = true
+
+    while (hasMore) {
+      const response = await meApi.getSubscriptionsPage({ page, size })
+      items.push(...response.items)
+
+      hasMore = (page + 1) * response.size < response.total && response.items.length > 0
+      page++
     }
 
     return items
@@ -1049,6 +1197,13 @@ export const adminApi = {
 
   async enableUser(userId: string): Promise<void> {
     await fetchJson<void>(`/api/v1/admin/users/${userId}/enable`, {
+      method: 'POST',
+      headers: getCsrfHeaders(),
+    })
+  },
+
+  async triggerPasswordReset(userId: string): Promise<void> {
+    await fetchJson<void>(`/api/v1/admin/users/${userId}/password-reset`, {
       method: 'POST',
       headers: getCsrfHeaders(),
     })

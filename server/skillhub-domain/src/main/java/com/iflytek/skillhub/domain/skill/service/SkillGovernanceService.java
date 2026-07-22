@@ -162,7 +162,8 @@ public class SkillGovernanceService {
         assertCanManageLifecycle(skill, actorUserId, userNamespaceRoles);
         if (version.getStatus() != SkillVersionStatus.DRAFT
                 && version.getStatus() != SkillVersionStatus.REJECTED
-                && version.getStatus() != SkillVersionStatus.SCAN_FAILED) {
+                && version.getStatus() != SkillVersionStatus.SCAN_FAILED
+                && version.getStatus() != SkillVersionStatus.UPLOADED) {
             throw new DomainBadRequestException("error.skill.version.delete.unsupported", version.getVersion());
         }
 
@@ -181,12 +182,15 @@ public class SkillGovernanceService {
         deleteStorageAfterCommit(skill, namespaceSlug, storageKeys);
         skillFileRepository.deleteByVersionId(version.getId());
         securityScanService.softDeleteByVersionId(version.getId());
-        skillVersionRepository.delete(version);
+        // FK 约束 fk_skill_latest_version 阻止删除 skill_version 当 skill.latest_version_id 还指向它。
+        // 必须先解开引用并 flush，让 PG 在 delete 时看不到引用。
         if (version.getId().equals(skill.getLatestVersionId())) {
             skill.setLatestVersionId(findLatestPublishedVersionId(skill.getId()));
             skill.setUpdatedBy(actorUserId);
             skillRepository.save(skill);
+            skillRepository.flush();
         }
+        skillVersionRepository.delete(version);
         auditLogService.record(
                 actorUserId,
                 "DELETE_SKILL_VERSION",
@@ -242,7 +246,7 @@ public class SkillGovernanceService {
         if (version.getStatus() != SkillVersionStatus.PENDING_REVIEW) {
             throw new DomainBadRequestException("review.withdraw.not_pending", version.getId());
         }
-        version.setStatus(SkillVersionStatus.DRAFT);
+        version.setStatus(SkillVersionStatus.UPLOADED);
         SkillVersion savedVersion = skillVersionRepository.save(version);
         skill.setUpdatedBy(actorUserId);
         skillRepository.save(skill);
@@ -270,6 +274,8 @@ public class SkillGovernanceService {
             }
         });
         auditLogService.record(actorUserId, "YANK_SKILL_VERSION", "SKILL_VERSION", versionId, null, clientIp, userAgent, jsonReason(reason));
+        eventPublisher.publishEvent(new com.iflytek.skillhub.domain.event.SkillVersionYankedEvent(
+                version.getSkillId(), versionId, actorUserId));
         return saved;
     }
 

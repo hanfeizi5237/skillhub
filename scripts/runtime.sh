@@ -22,6 +22,7 @@ SKILLHUB_SCANNER_IMAGE_VALUE="${SKILLHUB_SCANNER_IMAGE:-}"
 POSTGRES_IMAGE_VALUE="${POSTGRES_IMAGE:-}"
 REDIS_IMAGE_VALUE="${REDIS_IMAGE:-}"
 DISABLE_SCANNER=false
+USE_ALIYUN=false
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -36,6 +37,7 @@ while [ "$#" -gt 0 ]; do
         exit 1
       fi
       SKILLHUB_MIRROR_REGISTRY_VALUE="${SKILLHUB_ALIYUN_REGISTRY%/}/${SKILLHUB_ALIYUN_NAMESPACE}"
+      USE_ALIYUN=true
       shift
       ;;
     --mirror-registry)
@@ -114,7 +116,13 @@ EOF
   esac
 done
 
-SKILLHUB_RAW_BASE="${SKILLHUB_RAW_BASE:-https://raw.githubusercontent.com/iflytek/skillhub/$SKILLHUB_REF}"
+if [ "$USE_ALIYUN" = "true" ]; then
+  SKILLHUB_RAW_BASE="${SKILLHUB_RAW_BASE:-https://imageless.oss-cn-beijing.aliyuncs.com}"
+  echo "Using Aliyun OSS for runtime files: $SKILLHUB_RAW_BASE"
+else
+  SKILLHUB_RAW_BASE="${SKILLHUB_RAW_BASE:-https://raw.githubusercontent.com/iflytek/skillhub/$SKILLHUB_REF}"
+  echo "Using GitHub raw for runtime files: $SKILLHUB_RAW_BASE"
+fi
 COMPOSE_FILE="$SKILLHUB_HOME/compose.release.yml"
 ENV_EXAMPLE_FILE="$SKILLHUB_HOME/.env.release.example"
 ENV_FILE="$SKILLHUB_HOME/.env.release"
@@ -151,13 +159,144 @@ set_env_value() {
   fi
 
   tmp="$ENV_FILE.tmp"
-  if grep -q "^$key=" "$ENV_FILE"; then
-    sed "s|^$key=.*|$key=$value|" "$ENV_FILE" >"$tmp"
-  else
-    cat "$ENV_FILE" >"$tmp"
-    printf '%s=%s\n' "$key" "$value" >>"$tmp"
-  fi
+  found=false
+  old_umask="$(umask)"
+  umask 077
+  {
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        "$key="*)
+          printf '%s=%s\n' "$key" "$value"
+          found=true
+          ;;
+        *)
+          printf '%s\n' "$line"
+          ;;
+      esac
+    done <"$ENV_FILE"
+    if [ "$found" = "false" ]; then
+      printf '%s=%s\n' "$key" "$value"
+    fi
+  } >"$tmp"
+  umask "$old_umask"
   mv "$tmp" "$ENV_FILE"
+  secure_env_file
+}
+
+secure_env_file() {
+  if [ -f "$ENV_FILE" ]; then
+    chmod 600 "$ENV_FILE"
+  fi
+}
+
+get_env_value() {
+  key="$1"
+  default_value="${2:-}"
+  value="$(grep "^$key=" "$ENV_FILE" | tail -n 1 | cut -d= -f2- || true)"
+
+  if [ -n "$value" ]; then
+    printf '%s' "$value"
+  else
+    printf '%s' "$default_value"
+  fi
+}
+
+generate_secret() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 32
+    return 0
+  fi
+
+  if [ -r /dev/urandom ] && command -v od >/dev/null 2>&1; then
+    dd if=/dev/urandom bs=32 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'
+    return 0
+  fi
+
+  echo "Unable to generate SKILLHUB_DOWNLOAD_ANON_COOKIE_SECRET. Install openssl or configure it manually." >&2
+  exit 1
+}
+
+is_placeholder_secret() {
+  case "$1" in
+    ""|change-me-in-production|replace-me|replace-with-random-download-secret-32-bytes|TODO*|todo*|replace*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+ensure_anonymous_download_secret() {
+  secret="$(get_env_value "SKILLHUB_DOWNLOAD_ANON_COOKIE_SECRET" "")"
+  if ! is_placeholder_secret "$secret" && [ "${#secret}" -ge 32 ]; then
+    return 0
+  fi
+
+  set_env_value "SKILLHUB_DOWNLOAD_ANON_COOKIE_SECRET" "$(generate_secret)"
+  echo "Generated SKILLHUB_DOWNLOAD_ANON_COOKIE_SECRET in $ENV_FILE"
+}
+
+wait_for_postgres_ready() {
+  postgres_user="$1"
+  postgres_db="$2"
+  attempt=1
+
+  while [ "$attempt" -le 60 ]; do
+    if run_compose exec -T postgres pg_isready -U "$postgres_user" -d "$postgres_db" >/dev/null 2>&1; then
+      return 0
+    fi
+
+    attempt=$((attempt + 1))
+    sleep 2
+  done
+
+  echo "PostgreSQL did not become ready in time." >&2
+  run_compose logs postgres >&2 || true
+  exit 1
+}
+
+wait_for_redis_ready() {
+  attempt=1
+
+  while [ "$attempt" -le 60 ]; do
+    if run_compose exec -T redis redis-cli ping >/dev/null 2>&1; then
+      return 0
+    fi
+
+    attempt=$((attempt + 1))
+    sleep 2
+  done
+
+  echo "Redis did not become ready in time." >&2
+  run_compose logs redis >&2 || true
+  exit 1
+}
+
+ensure_postgres_password_matches_env() {
+  postgres_user="$(get_env_value "POSTGRES_USER" "skillhub")"
+  postgres_db="$(get_env_value "POSTGRES_DB" "skillhub")"
+  postgres_password="$(get_env_value "POSTGRES_PASSWORD" "skillhub_demo")"
+
+  if [ -z "$postgres_password" ]; then
+    echo "POSTGRES_PASSWORD must not be empty." >&2
+    exit 1
+  fi
+
+  wait_for_postgres_ready "$postgres_user" "$postgres_db"
+
+  run_compose exec -T postgres \
+    psql -U "$postgres_user" -d "$postgres_db" \
+    -v ON_ERROR_STOP=1 \
+    -v password="$postgres_password" <<'SQL' >/dev/null
+SELECT format('ALTER ROLE %I WITH PASSWORD %L', current_user, :'password');
+\gexec
+SQL
+
+  run_compose exec -T -e "PGPASSWORD=$postgres_password" postgres \
+    psql -h 127.0.0.1 -U "$postgres_user" -d "$postgres_db" \
+    -v ON_ERROR_STOP=1 \
+    -c 'select current_user;' >/dev/null
 }
 
 prepare_runtime_files() {
@@ -166,8 +305,12 @@ prepare_runtime_files() {
   download_file "$SKILLHUB_RAW_BASE/.env.release.example" "$ENV_EXAMPLE_FILE"
 
   if [ ! -f "$ENV_FILE" ]; then
+    old_umask="$(umask)"
+    umask 077
     cp "$ENV_EXAMPLE_FILE" "$ENV_FILE"
+    umask "$old_umask"
   fi
+  secure_env_file
 
   if [ -n "$SKILLHUB_MIRROR_REGISTRY_VALUE" ]; then
     mirror_registry="${SKILLHUB_MIRROR_REGISTRY_VALUE%/}"
@@ -215,6 +358,12 @@ prepare_runtime_files() {
   if [ -n "$SKILLHUB_PUBLIC_BASE_URL_VALUE" ]; then
     set_env_value "SKILLHUB_PUBLIC_BASE_URL" "$SKILLHUB_PUBLIC_BASE_URL_VALUE"
   fi
+
+  if [ "$DISABLE_SCANNER" = "true" ]; then
+    set_env_value "SKILLHUB_SECURITY_SCANNER_ENABLED" "false"
+  fi
+
+  ensure_anonymous_download_secret
 }
 
 run_compose() {
@@ -227,8 +376,12 @@ prepare_runtime_files
 
 case "$COMMAND" in
   up)
+    run_compose up -d postgres
+    ensure_postgres_password_matches_env
     if [ "$DISABLE_SCANNER" = "true" ]; then
-      SKILLHUB_SECURITY_SCANNER_ENABLED=false run_compose up -d --scale skill-scanner=0
+      run_compose up -d redis
+      wait_for_redis_ready
+      SKILLHUB_SECURITY_SCANNER_ENABLED=false run_compose up -d --no-deps --scale skill-scanner=0 server web
     else
       run_compose up -d
     fi

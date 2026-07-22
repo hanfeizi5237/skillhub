@@ -7,6 +7,7 @@ import com.iflytek.skillhub.domain.namespace.NamespaceRepository;
 import com.iflytek.skillhub.domain.skill.Skill;
 import com.iflytek.skillhub.domain.skill.SkillRepository;
 import com.iflytek.skillhub.domain.skill.SkillVersionRepository;
+import com.iflytek.skillhub.domain.social.SkillSubscriptionService;
 import com.iflytek.skillhub.notification.domain.NotificationCategory;
 import com.iflytek.skillhub.notification.service.NotificationDispatcher;
 import org.slf4j.Logger;
@@ -18,6 +19,7 @@ import org.springframework.transaction.event.TransactionalEventListener;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 @Component
 public class NotificationEventListener {
@@ -29,6 +31,7 @@ public class NotificationEventListener {
     private final NamespaceRepository namespaceRepository;
     private final RecipientResolver recipientResolver;
     private final NotificationDispatcher dispatcher;
+    private final SkillSubscriptionService skillSubscriptionService;
     private final ObjectMapper objectMapper;
 
     public NotificationEventListener(SkillRepository skillRepository,
@@ -36,12 +39,14 @@ public class NotificationEventListener {
                                       NamespaceRepository namespaceRepository,
                                       RecipientResolver recipientResolver,
                                       NotificationDispatcher dispatcher,
+                                      SkillSubscriptionService skillSubscriptionService,
                                       ObjectMapper objectMapper) {
         this.skillRepository = skillRepository;
         this.skillVersionRepository = skillVersionRepository;
         this.namespaceRepository = namespaceRepository;
         this.recipientResolver = recipientResolver;
         this.dispatcher = dispatcher;
+        this.skillSubscriptionService = skillSubscriptionService;
         this.objectMapper = objectMapper;
     }
 
@@ -49,7 +54,7 @@ public class NotificationEventListener {
     @TransactionalEventListener
     public void onSkillPublished(SkillPublishedEvent event) {
         skillRepository.findById(event.skillId()).ifPresent(skill -> {
-            if (!event.publisherId().equals(skill.getCreatedBy())) {
+            if (!Objects.equals(event.publisherId(), skill.getOwnerId())) {
                 return;
             }
             String title = "Skill published: " + skillDisplayName(skill);
@@ -58,6 +63,50 @@ public class NotificationEventListener {
             String json = toJson(body);
             dispatcher.dispatch(event.publisherId(), NotificationCategory.PUBLISH,
                     "SKILL_PUBLISHED", title, json, "SKILL", event.skillId());
+        });
+    }
+
+    @Async("skillhubEventExecutor")
+    @TransactionalEventListener
+    public void onSkillPublishedForSubscribers(SkillPublishedEvent event) {
+        skillRepository.findById(event.skillId()).ifPresent(skill -> {
+            List<String> subscribers = skillSubscriptionService.findSubscribersBySkillId(event.skillId());
+            if (subscribers.isEmpty()) {
+                return;
+            }
+            String title = "Skill updated: " + skillDisplayName(skill);
+            Map<String, Object> body = bodyWithSkill(skill);
+            versionLabel(event.versionId(), body);
+            String json = toJson(body);
+            for (String subscriberId : subscribers) {
+                if (subscriberId.equals(event.publisherId())) {
+                    continue; // skip the publisher
+                }
+                dispatcher.dispatch(subscriberId, NotificationCategory.PUBLISH,
+                        "SUBSCRIPTION_NEW_VERSION", title, json, "SKILL", event.skillId());
+            }
+        });
+    }
+
+    @Async("skillhubEventExecutor")
+    @TransactionalEventListener
+    public void onSkillVersionYankedForSubscribers(SkillVersionYankedEvent event) {
+        skillRepository.findById(event.skillId()).ifPresent(skill -> {
+            List<String> subscribers = skillSubscriptionService.findSubscribersBySkillId(event.skillId());
+            if (subscribers.isEmpty()) {
+                return;
+            }
+            String title = "Skill version yanked: " + skillDisplayName(skill);
+            Map<String, Object> body = bodyWithSkill(skill);
+            versionLabel(event.versionId(), body);
+            String json = toJson(body);
+            for (String subscriberId : subscribers) {
+                if (subscriberId.equals(event.actorUserId())) {
+                    continue; // skip the actor
+                }
+                dispatcher.dispatch(subscriberId, NotificationCategory.PUBLISH,
+                        "SUBSCRIPTION_VERSION_YANKED", title, json, "SKILL", event.skillId());
+            }
         });
     }
 
@@ -77,6 +126,22 @@ public class NotificationEventListener {
                         "REVIEW_SUBMITTED", title, json, "REVIEW", event.reviewId());
             }
         });
+    }
+
+    @Async("skillhubEventExecutor")
+    @TransactionalEventListener
+    public void onProfileReviewSubmitted(ProfileReviewSubmittedEvent event) {
+        String title = "Profile review submitted";
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("profileReviewId", event.profileReviewId());
+        body.put("submitterId", event.submitterId());
+        body.put("fields", event.fields());
+        String json = toJson(body);
+        List<String> admins = recipientResolver.resolvePlatformUserAdmins();
+        for (String admin : admins.stream().distinct().toList()) {
+            dispatcher.dispatch(admin, NotificationCategory.REVIEW,
+                    "PROFILE_REVIEW_SUBMITTED", title, json, "PROFILE_REVIEW", event.profileReviewId());
+        }
     }
 
     @Async("skillhubEventExecutor")

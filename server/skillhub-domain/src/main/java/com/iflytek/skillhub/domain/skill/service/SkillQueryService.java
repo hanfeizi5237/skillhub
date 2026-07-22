@@ -14,6 +14,10 @@ import com.iflytek.skillhub.domain.skill.*;
 import com.iflytek.skillhub.domain.user.UserAccount;
 import com.iflytek.skillhub.domain.user.UserAccountRepository;
 import com.iflytek.skillhub.storage.ObjectStorageService;
+import com.github.difflib.DiffUtils;
+import com.github.difflib.patch.AbstractDelta;
+import com.github.difflib.patch.Chunk;
+import com.github.difflib.patch.Patch;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
@@ -24,12 +28,15 @@ import java.io.UncheckedIOException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.stream.Collectors;
 
 /**
@@ -93,6 +100,7 @@ public class SkillQueryService {
             String status,
             Long downloadCount,
             Integer starCount,
+            Integer subscriptionCount,
             java.math.BigDecimal ratingAvg,
             Integer ratingCount,
             boolean hidden,
@@ -122,6 +130,47 @@ public class SkillQueryService {
             String manifestJson
     ) {}
 
+    public record SkillVersionCompareDTO(
+            String from,
+            String to,
+            SkillVersionCompareSummaryDTO summary,
+            List<SkillVersionCompareFileDTO> files
+    ) {}
+
+    public record SkillVersionCompareSummaryDTO(
+            int totalFiles,
+            int addedFiles,
+            int modifiedFiles,
+            int removedFiles,
+            int addedLines,
+            int removedLines
+    ) {}
+
+    public record SkillVersionCompareFileDTO(
+            String path,
+            String changeType,
+            Long oldSize,
+            Long newSize,
+            boolean binary,
+            boolean truncated,
+            List<SkillVersionCompareHunkDTO> hunks
+    ) {}
+
+    public record SkillVersionCompareHunkDTO(
+            int oldStart,
+            int oldLines,
+            int newStart,
+            int newLines,
+            List<SkillVersionCompareLineDTO> lines
+    ) {}
+
+    public record SkillVersionCompareLineDTO(
+            String type,
+            String content,
+            Integer oldLineNumber,
+            Integer newLineNumber
+    ) {}
+
     public record ResolvedVersionDTO(
             Long skillId,
             String namespace,
@@ -149,11 +198,14 @@ public class SkillQueryService {
             String skillSlug,
             String currentUserId,
             Map<Long, NamespaceRole> userNsRoles) {
-
         Namespace namespace = findNamespace(namespaceSlug);
         Skill skill = resolveVisibleSkill(namespace.getId(), skillSlug, currentUserId);
 
-        // Visibility check
+        if (namespace.getStatus() == com.iflytek.skillhub.domain.namespace.NamespaceStatus.ARCHIVED
+                && !isNamespaceMember(namespace.getId(), currentUserId, userNsRoles)) {
+            throw new DomainForbiddenException("error.namespace.archived", namespaceSlug);
+        }
+
         if (!visibilityChecker.canAccess(skill, currentUserId, userNsRoles)) {
             throw new DomainForbiddenException("error.skill.access.denied", skillSlug);
         }
@@ -180,6 +232,7 @@ public class SkillQueryService {
                 skill.getStatus().name(),
                 skill.getDownloadCount(),
                 skill.getStarCount(),
+                skill.getSubscriptionCount(),
                 skill.getRatingAvg(),
                 skill.getRatingCount(),
                 skill.isHidden(),
@@ -196,6 +249,15 @@ public class SkillQueryService {
                 ownerPreviewReviewComment,
                 projection.resolutionMode().name()
         );
+    }
+
+    public SkillDetailDTO getSkillDetail(
+            String namespaceSlug,
+            String skillSlug,
+            String currentUserId,
+            Map<Long, NamespaceRole> userNsRoles,
+            Set<String> platformRoles) {
+        return getSkillDetail(namespaceSlug, skillSlug, currentUserId, userNsRoles);
     }
 
     /**
@@ -251,6 +313,70 @@ public class SkillQueryService {
                 skillVersion.getParsedMetadataJson(),
                 skillVersion.getManifestJson()
         );
+    }
+
+    public SkillVersionCompareDTO compareVersions(
+            String namespaceSlug,
+            String skillSlug,
+            String fromVersion,
+            String toVersion,
+            String currentUserId,
+            Map<Long, NamespaceRole> userNsRoles) {
+        if (Objects.equals(fromVersion, toVersion)) {
+            throw new DomainBadRequestException("error.skill.version.compare.same");
+        }
+
+        Namespace namespace = findNamespace(namespaceSlug);
+        Skill skill = resolveVisibleSkill(namespace.getId(), skillSlug, currentUserId);
+        assertPublishedAccessible(namespace, skill, currentUserId, userNsRoles);
+
+        SkillVersion from = findVersion(skill, fromVersion);
+        SkillVersion to = findVersion(skill, toVersion);
+        assertPreviewAccessible(skill, from, fromVersion, currentUserId, userNsRoles);
+        assertPreviewAccessible(skill, to, toVersion, currentUserId, userNsRoles);
+
+        Map<String, SkillFile> fromFiles = availableFiles(from.getId()).stream()
+                .collect(Collectors.toMap(SkillFile::getFilePath, file -> file));
+        Map<String, SkillFile> toFiles = availableFiles(to.getId()).stream()
+                .collect(Collectors.toMap(SkillFile::getFilePath, file -> file));
+
+        List<SkillVersionCompareFileDTO> files = new TreeSet<String>() {{
+            addAll(fromFiles.keySet());
+            addAll(toFiles.keySet());
+        }}.stream()
+                .map(path -> buildCompareFile(fromFiles.get(path), toFiles.get(path)))
+                .filter(Objects::nonNull)
+                .toList();
+
+        int addedFiles = 0;
+        int modifiedFiles = 0;
+        int removedFiles = 0;
+        int addedLines = 0;
+        int removedLines = 0;
+        for (SkillVersionCompareFileDTO file : files) {
+            if ("ADDED".equals(file.changeType())) {
+                addedFiles++;
+            } else if ("REMOVED".equals(file.changeType())) {
+                removedFiles++;
+            } else {
+                modifiedFiles++;
+            }
+            for (SkillVersionCompareHunkDTO hunk : file.hunks()) {
+                for (SkillVersionCompareLineDTO line : hunk.lines()) {
+                    if ("ADD".equals(line.type())) {
+                        addedLines++;
+                    } else if ("DELETE".equals(line.type())) {
+                        removedLines++;
+                    }
+                }
+            }
+        }
+
+        return new SkillVersionCompareDTO(
+                fromVersion,
+                toVersion,
+                new SkillVersionCompareSummaryDTO(files.size(), addedFiles, modifiedFiles, removedFiles, addedLines, removedLines),
+                files);
     }
 
     public List<SkillFile> listFiles(
@@ -333,6 +459,7 @@ public class SkillQueryService {
             visibleVersions = skillVersionRepository.findBySkillId(skill.getId()).stream()
                     .filter(version -> version.getStatus() == SkillVersionStatus.PUBLISHED
                             || version.getStatus() == SkillVersionStatus.PENDING_REVIEW
+                            || version.getStatus() == SkillVersionStatus.UPLOADED
                             || version.getStatus() == SkillVersionStatus.DRAFT
                             || version.getStatus() == SkillVersionStatus.REJECTED
                             || version.getStatus() == SkillVersionStatus.YANKED
@@ -360,13 +487,7 @@ public class SkillQueryService {
     }
 
     public boolean isDownloadAvailable(SkillVersion version) {
-        if (version == null) {
-            return false;
-        }
-        if (version.getStatus() != SkillVersionStatus.PUBLISHED) {
-            return false;
-        }
-        return version.isDownloadReady();
+        return SkillInstallability.isInstallableVersion(version);
     }
 
     public ReviewSkillSnapshotDTO getReviewSkillSnapshot(Long skillVersionId) {
@@ -382,6 +503,7 @@ public class SkillQueryService {
         List<SkillVersion> versions = skillVersionRepository.findBySkillId(skill.getId()).stream()
                 .filter(version -> version.getStatus() == SkillVersionStatus.PUBLISHED
                         || version.getStatus() == SkillVersionStatus.PENDING_REVIEW
+                        || version.getStatus() == SkillVersionStatus.UPLOADED
                         || version.getStatus() == SkillVersionStatus.DRAFT
                         || version.getStatus() == SkillVersionStatus.REJECTED
                         || version.getStatus() == SkillVersionStatus.YANKED
@@ -437,6 +559,7 @@ public class SkillQueryService {
         Skill skill = resolveVisibleSkill(namespace.getId(), skillSlug, currentUserId);
         assertPublishedAccessible(namespace, skill, currentUserId, userNsRoles);
         SkillVersion resolved = resolveVersionEntity(skill, version, tag, hash);
+        assertInstallableVersion(resolved, resolved.getVersion());
         String fingerprint = computeFingerprint(resolved);
         Boolean matched = hash == null || hash.isBlank() ? null : Objects.equals(hash, fingerprint);
 
@@ -472,6 +595,81 @@ public class SkillQueryService {
                 slug,
                 currentUserId,
                 SkillSlugResolutionService.Preference.CURRENT_USER);
+    }
+
+    private static final long COMPARE_MAX_FILE_BYTES = 1024 * 1024;
+    private static final int COMPARE_MAX_LINES = 5000;
+    private static final Set<String> BINARY_FILE_EXTENSIONS = Set.of(
+            ".png", ".jpg", ".jpeg", ".gif", ".ico", ".woff", ".woff2", ".ttf", ".eot",
+            ".zip", ".tar", ".gz", ".jar", ".war", ".class", ".so", ".dll", ".exe", ".pdf"
+    );
+
+    private SkillVersionCompareFileDTO buildCompareFile(SkillFile fromFile, SkillFile toFile) {
+        if (fromFile != null && toFile != null && Objects.equals(fromFile.getSha256(), toFile.getSha256())) {
+            return null;
+        }
+
+        String path = fromFile != null ? fromFile.getFilePath() : Objects.requireNonNull(toFile).getFilePath();
+        String changeType = fromFile == null ? "ADDED" : toFile == null ? "REMOVED" : "MODIFIED";
+        Long oldSize = fromFile != null ? fromFile.getFileSize() : null;
+        Long newSize = toFile != null ? toFile.getFileSize() : null;
+        boolean isBinary = isBinaryFile(path);
+        if (isBinary) {
+            return new SkillVersionCompareFileDTO(path, changeType, oldSize, newSize, true, false, List.of());
+        }
+
+        String oldContent = fromFile != null ? readTextContent(fromFile) : "";
+        String newContent = toFile != null ? readTextContent(toFile) : "";
+        List<String> oldLines = splitLines(oldContent);
+        List<String> newLines = splitLines(newContent);
+        boolean isTruncated = (oldSize != null && oldSize > COMPARE_MAX_FILE_BYTES)
+                || (newSize != null && newSize > COMPARE_MAX_FILE_BYTES)
+                || oldLines.size() > COMPARE_MAX_LINES
+                || newLines.size() > COMPARE_MAX_LINES;
+        if (isTruncated) {
+            return new SkillVersionCompareFileDTO(path, changeType, oldSize, newSize, false, true, List.of());
+        }
+
+        Patch<String> patch = DiffUtils.diff(oldLines, newLines);
+        List<SkillVersionCompareHunkDTO> hunks = patch.getDeltas().stream()
+                .map(this::toCompareHunk)
+                .toList();
+        return new SkillVersionCompareFileDTO(path, changeType, oldSize, newSize, false, false, hunks);
+    }
+
+    private SkillVersionCompareHunkDTO toCompareHunk(AbstractDelta<String> delta) {
+        Chunk<String> source = delta.getSource();
+        Chunk<String> target = delta.getTarget();
+        List<SkillVersionCompareLineDTO> lines = new java.util.ArrayList<>();
+
+        int oldLine = source.getPosition() + 1;
+        for (String line : source.getLines()) {
+            lines.add(new SkillVersionCompareLineDTO("DELETE", line, oldLine++, null));
+        }
+
+        int newLine = target.getPosition() + 1;
+        for (String line : target.getLines()) {
+            lines.add(new SkillVersionCompareLineDTO("ADD", line, null, newLine++));
+        }
+
+        return new SkillVersionCompareHunkDTO(
+                source.getPosition() + 1,
+                source.size(),
+                target.getPosition() + 1,
+                target.size(),
+                lines);
+    }
+
+    private List<String> splitLines(String content) {
+        if (content == null || content.isEmpty()) {
+            return List.of();
+        }
+        return Arrays.asList(content.split("\\R", -1));
+    }
+
+    private boolean isBinaryFile(String path) {
+        String lowerCasePath = path.toLowerCase(java.util.Locale.ROOT);
+        return BINARY_FILE_EXTENSIONS.stream().anyMatch(lowerCasePath::endsWith);
     }
 
     private SkillVersion findVersion(Skill skill, String version) {
@@ -689,14 +887,17 @@ public class SkillQueryService {
         if (status == SkillVersionStatus.SCAN_FAILED) {
             return 1;
         }
-        if (status == SkillVersionStatus.REJECTED) {
+        if (status == SkillVersionStatus.UPLOADED) {
             return 2;
         }
-        if (status == SkillVersionStatus.PENDING_REVIEW) {
+        if (status == SkillVersionStatus.REJECTED) {
             return 3;
         }
-        if (status == SkillVersionStatus.DRAFT) {
+        if (status == SkillVersionStatus.PENDING_REVIEW) {
             return 4;
+        }
+        if (status == SkillVersionStatus.DRAFT) {
+            return 5;
         }
         if (status == SkillVersionStatus.YANKED) {
             return 5;
@@ -707,6 +908,12 @@ public class SkillQueryService {
     private void assertPublishedVersion(SkillVersion version, String versionStr) {
         if (version.getStatus() != SkillVersionStatus.PUBLISHED) {
             throw new DomainBadRequestException("error.skill.version.notPublished", versionStr);
+        }
+    }
+
+    private void assertInstallableVersion(SkillVersion version, String versionStr) {
+        if (!SkillInstallability.isInstallableVersion(version)) {
+            throw new DomainBadRequestException("error.skill.version.notDownloadable", versionStr);
         }
     }
 

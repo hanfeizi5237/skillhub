@@ -2,6 +2,7 @@ package com.iflytek.skillhub.domain.security;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.iflytek.skillhub.domain.skill.SkillVisibility;
 import com.iflytek.skillhub.domain.skill.SkillVersion;
 import com.iflytek.skillhub.domain.skill.SkillVersionRepository;
 import com.iflytek.skillhub.domain.skill.SkillVersionStatus;
@@ -83,8 +84,11 @@ public class SecurityScanService {
                 System.currentTimeMillis(),
                 Map.of("scannerType", ScannerType.SKILL_SCANNER.getValue())
         ));
-        version.setStatus(SkillVersionStatus.SCANNING);
-        skillVersionRepository.save(version);
+        // Only transition to SCANNING if the version is not already published (auto-publish flow)
+        if (version.getStatus() != SkillVersionStatus.PUBLISHED) {
+            version.setStatus(SkillVersionStatus.SCANNING);
+            skillVersionRepository.save(version);
+        }
     }
 
     @Transactional
@@ -105,7 +109,14 @@ public class SecurityScanService {
         audit.setScannedAt(Instant.now(Clock.systemUTC()));
         auditRepository.save(audit);
 
-        version.setStatus(SkillVersionStatus.PENDING_REVIEW);
+        // Only transition from SCANNING — leave PUBLISHED/REJECTED/YANKED untouched
+        if (version.getStatus() == SkillVersionStatus.SCANNING) {
+            if (version.getRequestedVisibility() == SkillVisibility.PRIVATE) {
+                version.setStatus(SkillVersionStatus.UPLOADED);
+            } else {
+                version.setStatus(SkillVersionStatus.PENDING_REVIEW);
+            }
+        }
         skillVersionRepository.save(version);
     }
 

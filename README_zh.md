@@ -7,6 +7,7 @@
 <div align="center">
 
 [![文档](https://img.shields.io/badge/docs-zread.ai-4A90E2?logo=gitbook&logoColor=white)](https://zread.ai/iflytek/skillhub)
+[![Discord](https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/qHYvtDNPHS)
 [![许可证](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE)
 [![构建](https://github.com/iflytek/skillhub/actions/workflows/publish-images.yml/badge.svg)](https://github.com/iflytek/skillhub/actions/workflows/publish-images.yml)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-2496ED?logo=docker&logoColor=white)](https://ghcr.io/iflytek/skillhub)
@@ -16,6 +17,10 @@
 </div>
 
 ---
+
+<div align="center">
+  <img src="https://xfyun-doc.xfyun.cn/lc-sp-skillhub-demo-1775551643410.gif" alt="SkillHub Demo" width="800" />
+</div>
 
 SkillHub 是一个自托管平台，为团队提供私有的、受治理的智能体技能共享空间。发布技能包，推送到命名空间，让其他人通过搜索发现或通过 CLI 安装。专为防火墙后的本地部署而构建，提供与公共注册中心相同的精致体验。
 
@@ -63,7 +68,7 @@ curl -fsSL https://imageless.oss-cn-beijing.aliyuncs.com/runtime.sh | sh -s -- u
 **国内用户（阿里云镜像）：**
 
 ```bash
-curl -fsSL https://imageless.oss-cn-beijing.aliyuncs.com/runtime.sh | sh -s -- up --aliyun --public-url https://skillhub.your-company.com
+curl -fsSL https://imageless.oss-cn-beijing.aliyuncs.com/runtime.sh | sh -s -- up --aliyun --public-url https://skillhub.your-company.com --version latest
 ```
 
 如果部署遇到问题，请清除现有的运行时目录并重试。
@@ -102,6 +107,30 @@ curl -fsSL https://imageless.oss-cn-beijing.aliyuncs.com/runtime.sh | sh -s -- u
 /tmp/skillhub-runtime/runtime.sh down
 ```
 
+## SkillHub CLI
+
+通过命令行安装和管理 Agent 技能：
+
+```bash
+# 安装 CLI
+npm install -g @astron-team/skillhub
+
+# 或直接运行
+npx @astron-team/skillhub@latest version
+
+# 登录
+skillhub login --token sk_xxx --registry https://skill.xfyun.cn
+
+# 搜索和安装技能
+skillhub search pdf
+skillhub install pdf-parser --agent codex
+
+# 查看已安装技能
+skillhub list
+```
+
+📖 完整指南：[docs/skillhub/guide/cli.md](docs/skillhub/guide/cli.md)
+
 ## 开发
 
 ### 前置要求
@@ -125,6 +154,8 @@ make dev-all
 make dev-backend    # 仅后端
 make dev-web        # 仅前端
 ```
+
+> **国内开发者**：如果 Maven 依赖下载超时，需配置阿里云镜像。详见 [本地开发指南](https://iflytek.github.io/skillhub/quickstart.html#本地开发)。
 
 ### 常用命令
 
@@ -171,7 +202,7 @@ skillhub/
 curl -fsSL https://imageless.oss-cn-beijing.aliyuncs.com/runtime.sh | sh -s -- up --public-url https://skillhub.your-company.com
 
 # 阿里云镜像（国内推荐）
-curl -fsSL https://imageless.oss-cn-beijing.aliyuncs.com/runtime.sh | sh -s -- up --aliyun --public-url https://skillhub.your-company.com
+curl -fsSL https://imageless.oss-cn-beijing.aliyuncs.com/runtime.sh | sh -s -- up --aliyun --public-url https://skillhub.your-company.com --version latest
 ```
 
 ### 配置参数说明
@@ -325,13 +356,25 @@ npx clawhub search email
 npx clawhub install my-skill
 npx clawhub install my-namespace--my-skill
 
-# 发布技能
-npx clawhub publish ./my-skill
+# 发布到 global 空间
+npx clawhub publish ./my-skill --slug my-skill --version 1.0.0
+
+# 发布到如 my-space 这样的团队空间
+npx clawhub publish ./my-skill --slug my-space--my-skill --version 1.0.0
 ```
+
+其中 `my-space--my-skill` 是兼容层使用的 canonical slug，SkillHub 会将其解析为
+namespace `my-space` 和 skill slug `my-skill`。
 
 > 💡 **提示**：上述命令不仅适用于 OpenClaw，通过指定安装目录（`--dir`），也可适用于其他的 CLI Coding Agent 或 Agent 助手。例如：`npx clawhub --dir ~/.claude/skills install my-skill`
 
 📖 **[完整 OpenClaw 集成指南 →](./docs/openclaw-integration.md)**
+
+### [Hermes Agent](https://github.com/NousResearch/hermes-agent)
+
+[Hermes Agent](https://github.com/NousResearch/hermes-agent) 使用标准 `SKILL.md` 格式，并会递归发现 `$HERMES_HOME/skills/` 中的技能。通过 SkillHub CLI 的 `--dir` 参数即可把完整技能包安装到 Hermes，无需新增 registry 适配器；安装后可使用 `hermes skills list` 验证。
+
+📖 **[完整 Hermes Agent 集成指南 →](./docs/hermes-integration.md)**
 
 ### [AstronClaw](https://agent.xfyun.cn/astron-claw)
 
@@ -361,6 +404,7 @@ npx clawhub publish ./my-skill
 
 - 💬 **社区讨论**：[GitHub Discussions](https://github.com/iflytek/skillhub/discussions)
 - 🐛 **Bug 报告**：[Issues](https://github.com/iflytek/skillhub/issues)
+- 👾 **Discord**：[加入我们的服务器](https://discord.gg/qHYvtDNPHS)
 - 👥 **企业微信群**：
 
   ![企业微信群](https://github.com/iflytek/astron-agent/raw/main/docs/imgs/WeCom_Group.png)

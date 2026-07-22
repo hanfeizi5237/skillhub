@@ -12,10 +12,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.iflytek.skillhub.auth.exception.AuthFlowException;
 import com.iflytek.skillhub.auth.local.LocalAuthService;
+import com.iflytek.skillhub.auth.local.LocalCredentialRepository;
+import com.iflytek.skillhub.auth.local.PasswordResetService;
 import com.iflytek.skillhub.auth.rbac.PlatformPrincipal;
 import com.iflytek.skillhub.domain.namespace.NamespaceMemberRepository;
 import com.iflytek.skillhub.metrics.SkillHubMetrics;
 import com.iflytek.skillhub.security.AuthFailureThrottleService;
+import jakarta.servlet.http.Cookie;
 import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
@@ -50,6 +53,12 @@ class LocalAuthControllerTest {
     @MockBean
     private AuthFailureThrottleService authFailureThrottleService;
 
+    @MockBean
+    private PasswordResetService passwordResetService;
+
+    @MockBean
+    private LocalCredentialRepository localCredentialRepository;
+
     @Test
     void login_returnsCurrentUserEnvelope() throws Exception {
         PlatformPrincipal principal = new PlatformPrincipal(
@@ -61,6 +70,7 @@ class LocalAuthControllerTest {
             Set.of("SUPER_ADMIN")
         );
         given(localAuthService.login("alice", "Abcd123!")).willReturn(principal);
+        given(localCredentialRepository.existsByUserId("usr_1")).willReturn(true);
 
         mockMvc.perform(post("/api/v1/auth/local/login")
                 .with(csrf())
@@ -71,7 +81,8 @@ class LocalAuthControllerTest {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.code").value(0))
             .andExpect(jsonPath("$.data.userId").value("usr_1"))
-            .andExpect(jsonPath("$.data.oauthProvider").value("local"));
+            .andExpect(jsonPath("$.data.oauthProvider").value("local"))
+            .andExpect(jsonPath("$.data.canChangePassword").value(true));
         verify(skillHubMetrics).recordLocalLogin(true);
         verify(skillHubMetrics, never()).recordLocalLogin(false);
         verify(authFailureThrottleService).resetIdentifier("local", "alice");
@@ -88,6 +99,7 @@ class LocalAuthControllerTest {
             Set.of()
         );
         given(localAuthService.register("bob", "Abcd123!", "bob@example.com")).willReturn(principal);
+        given(localCredentialRepository.existsByUserId("usr_2")).willReturn(true);
 
         mockMvc.perform(post("/api/v1/auth/local/register")
                 .with(csrf())
@@ -97,7 +109,8 @@ class LocalAuthControllerTest {
                     """))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.code").value(0))
-            .andExpect(jsonPath("$.data.displayName").value("bob"));
+            .andExpect(jsonPath("$.data.displayName").value("bob"))
+            .andExpect(jsonPath("$.data.canChangePassword").value(true));
         verify(skillHubMetrics).incrementUserRegister();
     }
 
@@ -117,6 +130,23 @@ class LocalAuthControllerTest {
             .andExpect(jsonPath("$.code").value(400));
 
         verify(localAuthService).register("bob", "Abcd123!", "not-an-email");
+    }
+
+    @Test
+    void register_rejectsBlankEmail() throws Exception {
+        given(localAuthService.register("bob", "Abcd123!", " "))
+            .willThrow(new AuthFlowException(HttpStatus.BAD_REQUEST, "validation.auth.local.email.notBlank"));
+
+        mockMvc.perform(post("/api/v1/auth/local/register")
+                .with(csrf())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {"username":"bob","password":"Abcd123!","email":" "}
+                    """))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value(400));
+
+        verify(localAuthService).register("bob", "Abcd123!", " ");
     }
 
     @Test
@@ -174,6 +204,123 @@ class LocalAuthControllerTest {
                     """))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.code").value(0));
+    }
+
+    @Test
+    void changePassword_withAuthentication_withInvalidCsrf_returnsForbidden() throws Exception {
+        PlatformPrincipal principal = new PlatformPrincipal(
+            "usr_3",
+            "carol",
+            "carol@example.com",
+            "",
+            "local",
+            Set.of("SUPER_ADMIN")
+        );
+        var auth = new UsernamePasswordAuthenticationToken(
+            principal,
+            null,
+            List.of(new SimpleGrantedAuthority("ROLE_SUPER_ADMIN"))
+        );
+
+        mockMvc.perform(post("/api/v1/auth/local/change-password")
+                .with(authentication(auth))
+                .with(csrf().useInvalidToken())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {"currentPassword":"old","newPassword":"Newpass123!"}
+                    """))
+            .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void changePassword_withSessionCookieAndBearerHeaderWithoutCsrf_isRejected() throws Exception {
+        PlatformPrincipal principal = new PlatformPrincipal(
+            "usr_3",
+            "carol",
+            "carol@example.com",
+            "",
+            "local",
+            Set.of("SUPER_ADMIN")
+        );
+        var auth = new UsernamePasswordAuthenticationToken(
+            principal,
+            null,
+            List.of(new SimpleGrantedAuthority("ROLE_SUPER_ADMIN"))
+        );
+
+        mockMvc.perform(post("/api/v1/auth/local/change-password")
+                .with(authentication(auth))
+                .header("Authorization", "Bearer invalid-token")
+                .cookie(new Cookie("SESSION", "browser-session"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {"currentPassword":"old","newPassword":"Newpass123!"}
+                    """))
+            .andExpect(status().isUnauthorized());
+
+        verify(localAuthService, never()).changePassword("usr_3", "old", "Newpass123!");
+    }
+
+    @Test
+    void requestPasswordReset_returnsGenericSuccessEnvelope() throws Exception {
+        mockMvc.perform(post("/api/v1/auth/local/password-reset/request")
+                .with(csrf())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {"email":"alice@example.com"}
+                    """))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.code").value(0));
+
+        verify(passwordResetService).requestPasswordReset("alice@example.com");
+    }
+
+    @Test
+    void requestPasswordReset_rejectsInvalidEmailFormat() throws Exception {
+        willThrow(new AuthFlowException(HttpStatus.BAD_REQUEST, "validation.auth.password.reset.email.invalid"))
+            .given(passwordResetService).requestPasswordReset("alice");
+
+        mockMvc.perform(post("/api/v1/auth/local/password-reset/request")
+                .with(csrf())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {"email":"alice"}
+                    """))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value(400));
+
+        verify(passwordResetService).requestPasswordReset("alice");
+    }
+
+    @Test
+    void confirmPasswordReset_returnsUpdatedEnvelope() throws Exception {
+        mockMvc.perform(post("/api/v1/auth/local/password-reset/confirm")
+                .with(csrf())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {"email":"alice@example.com","code":"123456","newPassword":"Abcd123!"}
+                    """))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.code").value(0));
+
+        verify(passwordResetService).confirmPasswordReset("alice@example.com", "123456", "Abcd123!");
+    }
+
+    @Test
+    void confirmPasswordReset_rejectsInvalidEmailFormat() throws Exception {
+        willThrow(new AuthFlowException(HttpStatus.BAD_REQUEST, "validation.auth.password.reset.email.invalid"))
+            .given(passwordResetService).confirmPasswordReset("alice", "123456", "Abcd123!");
+
+        mockMvc.perform(post("/api/v1/auth/local/password-reset/confirm")
+                .with(csrf())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                    {"email":"alice","code":"123456","newPassword":"Abcd123!"}
+                    """))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.code").value(400));
+
+        verify(passwordResetService).confirmPasswordReset("alice", "123456", "Abcd123!");
     }
 
 }

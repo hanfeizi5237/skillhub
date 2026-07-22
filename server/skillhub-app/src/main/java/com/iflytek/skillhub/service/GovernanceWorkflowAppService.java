@@ -165,8 +165,13 @@ public class GovernanceWorkflowAppService {
         return promotionPortalAppService.rejectPromotion(promotionId, comment, userId, auditContext);
     }
 
-    public PageResponse<PromotionResponseDto> listPromotions(String status, int page, int size, String userId) {
-        return promotionPortalAppService.listPromotions(status, page, size, userId);
+    public PageResponse<PromotionResponseDto> listPromotions(String status,
+                                                             int page,
+                                                             int size,
+                                                             String sortBy,
+                                                             String sortDirection,
+                                                             String userId) {
+        return promotionPortalAppService.listPromotions(status, page, size, sortBy, sortDirection, userId);
     }
 
     public PageResponse<PromotionResponseDto> listPendingPromotions(int page, int size, String userId) {
@@ -253,5 +258,37 @@ public class GovernanceWorkflowAppService {
                                               String userId,
                                               AuditRequestContext auditContext) {
         return namespacePortalCommandAppService.restoreNamespace(slug, userId, auditContext);
+    }
+
+    public SkillLifecycleMutationResponse submitForReview(String namespace,
+                                                           String slug,
+                                                           String version,
+                                                           String targetVisibility,
+                                                           String userId,
+                                                           Map<Long, NamespaceRole> userNsRoles,
+                                                           AuditRequestContext auditContext) {
+        return skillLifecycleAppService.submitForReview(
+                namespace,
+                slug,
+                version,
+                targetVisibility,
+                userId,
+                userNsRoles,
+                auditContext);
+    }
+
+    public SkillLifecycleMutationResponse confirmPublish(String namespace,
+                                                          String slug,
+                                                          String version,
+                                                          String userId,
+                                                          Map<Long, NamespaceRole> userNsRoles,
+                                                          AuditRequestContext auditContext) {
+        return skillLifecycleAppService.confirmPublish(
+                namespace,
+                slug,
+                version,
+                userId,
+                userNsRoles,
+                auditContext);
     }
 }

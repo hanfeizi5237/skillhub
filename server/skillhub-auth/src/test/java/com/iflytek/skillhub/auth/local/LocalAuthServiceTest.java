@@ -231,11 +231,34 @@ class LocalAuthServiceTest {
     }
 
     @Test
+    void changePassword_withoutLocalCredential_rejectsRequest() {
+        given(credentialRepository.findByUserId("oauth-only")).willReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.changePassword("oauth-only", "old", "Newpass123!"))
+            .isInstanceOf(AuthFlowException.class)
+            .hasMessageContaining("error.auth.local.notEnabled")
+            .extracting("status")
+            .isEqualTo(HttpStatus.BAD_REQUEST);
+
+        verify(passwordEncoder, never()).matches(any(), any());
+        verify(credentialRepository, never()).save(any(LocalCredential.class));
+    }
+
+    @Test
     void register_rejectsInvalidEmailFormat() {
         given(credentialRepository.existsByUsernameIgnoreCase("alice")).willReturn(false);
 
         assertThatThrownBy(() -> service.register("Alice", "Abcd123!", "not-an-email"))
             .isInstanceOf(AuthFlowException.class)
             .hasMessageContaining("validation.auth.local.email.invalid");
+    }
+
+    @Test
+    void register_rejectsBlankEmail() {
+        given(credentialRepository.existsByUsernameIgnoreCase("alice")).willReturn(false);
+
+        assertThatThrownBy(() -> service.register("Alice", "Abcd123!", "   "))
+            .isInstanceOf(AuthFlowException.class)
+            .hasMessageContaining("validation.auth.local.email.notBlank");
     }
 }

@@ -65,11 +65,13 @@ const LandingPage = createLazyRouteComponent(() => import('@/pages/landing'), 'L
 const HomePage = createLazyRouteComponent(() => import('@/pages/home'), 'HomePage')
 const LoginPage = createLazyRouteComponent(() => import('@/pages/login'), 'LoginPage')
 const RegisterPage = createLazyRouteComponent(() => import('@/pages/register'), 'RegisterPage')
+const ResetPasswordPage = createLazyRouteComponent(() => import('@/pages/reset-password'), 'ResetPasswordPage')
 const PrivacyPolicyPage = createLazyRouteComponent(() => import('@/pages/privacy'), 'PrivacyPolicyPage')
 const SearchPage = createLazyRouteComponent(() => import('@/pages/search'), 'SearchPage')
 const TermsOfServicePage = createLazyRouteComponent(() => import('@/pages/terms'), 'TermsOfServicePage')
 const NamespacePage = createLazyRouteComponent(() => import('@/pages/namespace'), 'NamespacePage')
 const SkillDetailPage = createLazyRouteComponent(() => import('@/pages/skill-detail'), 'SkillDetailPage')
+const SkillVersionComparePage = createLazyRouteComponent(() => import('@/pages/skill-version-compare'), 'SkillVersionComparePage')
 const DashboardPage = createLazyRouteComponent(() => import('@/pages/dashboard'), 'DashboardPage')
 const MySkillsPage = createLazyRouteComponent(() => import('@/pages/dashboard/my-skills'), 'MySkillsPage')
 const PublishPage = createLazyRouteComponent(() => import('@/pages/dashboard/publish'), 'PublishPage')
@@ -85,28 +87,25 @@ const NamespaceReviewsPage = createLazyRouteComponent(
   () => import('@/pages/dashboard/namespace-reviews'),
   'NamespaceReviewsPage',
 )
-const GovernancePage = createLazyRouteComponent(() => import('@/pages/dashboard/governance'), 'GovernancePage')
-const ReviewsPage = createRoleProtectedRouteComponent(
-  () => import('@/pages/dashboard/reviews'),
-  'ReviewsPage',
-  ['SKILL_ADMIN', 'NAMESPACE_ADMIN', 'USER_ADMIN', 'SUPER_ADMIN'],
+const NamespaceReviewDetailPage = createLazyRouteComponent(
+  () => import('@/pages/dashboard/review-detail'),
+  'NamespaceReviewDetailPage',
 )
+const GovernancePage = createLazyRouteComponent(() => import('@/pages/dashboard/governance'), 'GovernancePage')
+const ReviewsPage = createLazyRouteComponent(() => import('@/pages/dashboard/reviews'), 'ReviewsPage')
 const ReportsPage = createRoleProtectedRouteComponent(
   () => import('@/pages/dashboard/reports'),
   'ReportsPage',
   ['SKILL_ADMIN', 'SUPER_ADMIN'],
 )
-const ReviewDetailPage = createRoleProtectedRouteComponent(
-  () => import('@/pages/dashboard/review-detail'),
-  'ReviewDetailPage',
-  ['SKILL_ADMIN', 'NAMESPACE_ADMIN', 'SUPER_ADMIN'],
-)
+const ReviewDetailPage = createLazyRouteComponent(() => import('@/pages/dashboard/review-detail'), 'ReviewDetailPage')
 const PromotionsPage = createRoleProtectedRouteComponent(
   () => import('@/pages/dashboard/promotions'),
   'PromotionsPage',
   ['SKILL_ADMIN', 'SUPER_ADMIN'],
 )
 const MyStarsPage = createLazyRouteComponent(() => import('@/pages/dashboard/stars'), 'MyStarsPage')
+const MySubscriptionsPage = createLazyRouteComponent(() => import('@/pages/dashboard/subscriptions'), 'MySubscriptionsPage')
 const NotificationsPage = createLazyRouteComponent(() => import('@/pages/notifications'), 'NotificationsPage')
 const TokensPage = createLazyRouteComponent(() => import('@/pages/dashboard/tokens'), 'TokensPage')
 const CliAuthPage = createLazyRouteComponent(() => import('@/pages/cli-auth'), 'CliAuthPage')
@@ -184,6 +183,12 @@ const registerRoute = createRoute({
   component: RegisterPage,
 })
 
+const resetPasswordRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: 'reset-password',
+  component: ResetPasswordPage,
+})
+
 const privacyRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: 'privacy',
@@ -194,9 +199,10 @@ const searchRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: 'search',
   component: SearchPage,
-  validateSearch: (search: Record<string, unknown>): { q: string; label?: string; sort: string; page: number; starredOnly: boolean } => {
+  validateSearch: (search: Record<string, unknown>): { q: string; namespace?: string; label?: string; sort: string; page: number; starredOnly: boolean } => {
     return {
       q: normalizeSearchQuery(typeof search.q === 'string' ? search.q : ''),
+      namespace: typeof search.namespace === 'string' && search.namespace ? search.namespace.replace(/^@/, '') : undefined,
       label: typeof search.label === 'string' && search.label ? search.label : undefined,
       sort: (search.sort as string) || 'newest',
       page: Number(search.page) || 0,
@@ -221,11 +227,20 @@ const namespaceRoute = createRoute({
 const skillDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/space/$namespace/$slug',
-  beforeLoad: requireAuth,
   validateSearch: (search: Record<string, unknown>): { returnTo?: string } => ({
     returnTo: typeof search.returnTo === 'string' && search.returnTo.startsWith('/') ? search.returnTo : undefined,
   }),
   component: SkillDetailPage,
+})
+
+const skillVersionCompareRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/space/$namespace/$slug/compare',
+  validateSearch: (search: Record<string, unknown>): { from: string; to: string } => ({
+    from: typeof search.from === 'string' ? search.from : '',
+    to: typeof search.to === 'string' ? search.to : '',
+  }),
+  component: SkillVersionComparePage,
 })
 
 const dashboardRoute = createRoute({
@@ -239,6 +254,12 @@ const dashboardSkillsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: 'dashboard/skills',
   beforeLoad: requireAuth,
+  validateSearch: (search: Record<string, unknown>): { page?: number; q?: string; namespace?: string; filter?: string } => ({
+    page: typeof search.page === 'number' ? search.page : undefined,
+    q: typeof search.q === 'string' && search.q ? search.q : undefined,
+    namespace: typeof search.namespace === 'string' && search.namespace ? search.namespace : undefined,
+    filter: typeof search.filter === 'string' && search.filter ? search.filter : undefined,
+  }),
   component: MySkillsPage,
 })
 
@@ -246,6 +267,10 @@ const dashboardPublishRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: 'dashboard/publish',
   beforeLoad: requireAuth,
+  validateSearch: (search: Record<string, unknown>): { namespace?: string; visibility?: string } => ({
+    namespace: typeof search.namespace === 'string' && search.namespace ? search.namespace : undefined,
+    visibility: typeof search.visibility === 'string' && search.visibility ? search.visibility : undefined,
+  }),
   component: PublishPage,
 })
 
@@ -281,6 +306,9 @@ const dashboardReviewsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: 'dashboard/reviews',
   beforeLoad: requireAuth,
+  validateSearch: (search: Record<string, unknown>): { type?: 'skill' | 'profile' } => ({
+    type: search.type === 'skill' || search.type === 'profile' ? search.type : undefined,
+  }),
   component: ReviewsPage,
 })
 
@@ -298,6 +326,13 @@ const dashboardReviewDetailRoute = createRoute({
   component: ReviewDetailPage,
 })
 
+const dashboardNamespaceReviewDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: 'dashboard/namespaces/$slug/reviews/$id',
+  beforeLoad: requireAuth,
+  component: NamespaceReviewDetailPage,
+})
+
 const dashboardPromotionsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: 'dashboard/promotions',
@@ -310,6 +345,13 @@ const dashboardStarsRoute = createRoute({
   path: 'dashboard/stars',
   beforeLoad: requireAuth,
   component: MyStarsPage,
+})
+
+const dashboardSubscriptionsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: 'dashboard/subscriptions',
+  beforeLoad: requireAuth,
+  component: MySubscriptionsPage,
 })
 
 const dashboardNotificationsRoute = createRoute({
@@ -397,23 +439,27 @@ const routeTree = rootRoute.addChildren([
   skillsRoute,
   loginRoute,
   registerRoute,
+  resetPasswordRoute,
   privacyRoute,
   searchRoute,
   termsRoute,
   namespaceRoute,
   skillDetailRoute,
+  skillVersionCompareRoute,
   dashboardRoute,
   dashboardSkillsRoute,
   dashboardPublishRoute,
   dashboardNamespacesRoute,
   dashboardNamespaceMembersRoute,
   dashboardNamespaceReviewsRoute,
+  dashboardNamespaceReviewDetailRoute,
   dashboardGovernanceRoute,
   dashboardReviewsRoute,
   dashboardReportsRoute,
   dashboardReviewDetailRoute,
   dashboardPromotionsRoute,
   dashboardStarsRoute,
+  dashboardSubscriptionsRoute,
   dashboardNotificationsRoute,
   dashboardTokensRoute,
   cliAuthRoute,

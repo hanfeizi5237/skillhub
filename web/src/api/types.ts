@@ -53,11 +53,21 @@ export interface LocalLoginRequest {
 }
 
 export interface LocalRegisterRequest extends LocalLoginRequest {
-  email?: string
+  email: string
 }
 
 export interface ChangePasswordRequest {
   currentPassword: string
+  newPassword: string
+}
+
+export interface PasswordResetRequest {
+  email: string
+}
+
+export interface PasswordResetConfirmRequest {
+  email: string
+  code: string
   newPassword: string
 }
 
@@ -111,11 +121,14 @@ export interface ManagedNamespace extends Namespace {
   canUnfreeze: boolean
   canArchive: boolean
   canRestore: boolean
+  canDelete: boolean
 }
 
 export interface NamespaceMember {
   id: number
   userId: string
+  displayName?: string
+  email?: string
   role: NamespaceRole
   createdAt: string
 }
@@ -127,12 +140,27 @@ export interface NamespaceCandidateUser {
   status: string
 }
 
+export interface BatchMemberResult {
+  userId: string
+  role: string
+  success: boolean
+  error?: string
+}
+
+export interface BatchMemberResponse {
+  totalCount: number
+  successCount: number
+  failureCount: number
+  results: BatchMemberResult[]
+}
+
 // Skill types
 export interface SkillSummary {
   id: number
   slug: string
   displayName: string
   summary?: string
+  visibility?: string
   status?: string
   downloadCount: number
   starCount: number
@@ -247,6 +275,47 @@ export interface SkillFile {
   sha256: string
 }
 
+export interface SkillVersionCompareLine {
+  type: 'CONTEXT' | 'ADD' | 'DELETE' | string
+  content: string
+  oldLineNumber: number | null
+  newLineNumber: number | null
+}
+
+export interface SkillVersionCompareHunk {
+  oldStart: number
+  oldLines: number
+  newStart: number
+  newLines: number
+  lines: SkillVersionCompareLine[]
+}
+
+export interface SkillVersionCompareFile {
+  path: string
+  changeType: 'ADDED' | 'MODIFIED' | 'REMOVED' | string
+  oldSize: number | null
+  newSize: number | null
+  binary: boolean
+  truncated: boolean
+  hunks: SkillVersionCompareHunk[]
+}
+
+export interface SkillVersionCompareSummary {
+  totalFiles: number
+  addedFiles: number
+  modifiedFiles: number
+  removedFiles: number
+  addedLines: number
+  removedLines: number
+}
+
+export interface SkillVersionCompare {
+  from: string
+  to: string
+  summary: SkillVersionCompareSummary
+  files: SkillVersionCompareFile[]
+}
+
 export interface SkillTag {
   id: number
   tagName: string
@@ -316,22 +385,32 @@ export interface ReviewSkillDetail {
   activeVersion: string
 }
 
+export type PromotionStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
+export type PromotionSortDirection = 'ASC' | 'DESC'
+export type PromotionSortBy = 'reviewedAt'
+
 export interface PromotionTask {
   id: number
   sourceSkillId: number
+  sourceSkillDisplayName: string
+  sourceSkillSummary?: string | null
   sourceNamespace: string
   sourceSkillSlug: string
   sourceVersion: string
+  sourceVersionFileCount: number
+  sourceVersionTotalSize: number
+  sourceSkillDownloadCount: number
+  sourceSkillStarCount: number
   targetNamespace: string
-  targetSkillId?: number
-  status: 'PENDING' | 'APPROVED' | 'REJECTED'
+  targetSkillId?: number | null
+  status: PromotionStatus
   submittedBy: string
-  submittedByName?: string
-  reviewedBy?: string
-  reviewedByName?: string
-  reviewComment?: string
+  submittedByName?: string | null
+  reviewedBy?: string | null
+  reviewedByName?: string | null
+  reviewComment?: string | null
   submittedAt: string
-  reviewedAt?: string
+  reviewedAt?: string | null
 }
 
 export interface SkillReport {

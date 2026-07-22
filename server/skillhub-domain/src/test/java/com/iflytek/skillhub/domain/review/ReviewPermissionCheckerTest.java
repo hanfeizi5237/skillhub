@@ -26,11 +26,35 @@ class ReviewPermissionCheckerTest {
     }
 
     @Test
-    void skillAdminCannotReviewOwnSubmission() {
+    void skillAdminCannotReviewOwnSubmissionWithoutNamespaceRole() {
         String userId = "user-1";
         ReviewTask task = new ReviewTask(1L, 10L, userId);
         assertFalse(checker.canReview(task, userId,
                 NamespaceType.TEAM, Map.of(), Set.of("SKILL_ADMIN")));
+    }
+
+    @Test
+    void skillAdminNamespaceAdminCanReviewOwnSubmission() {
+        String userId = "user-1";
+        ReviewTask task = new ReviewTask(1L, 10L, userId);
+        assertTrue(checker.canReview(task, userId,
+                NamespaceType.TEAM, Map.of(10L, NamespaceRole.ADMIN), Set.of("SKILL_ADMIN")));
+    }
+
+    @Test
+    void skillAdminNamespaceOwnerCanReviewOwnSubmission() {
+        String userId = "user-1";
+        ReviewTask task = new ReviewTask(1L, 10L, userId);
+        assertTrue(checker.canReview(task, userId,
+                NamespaceType.TEAM, Map.of(10L, NamespaceRole.OWNER), Set.of("SKILL_ADMIN")));
+    }
+
+    @Test
+    void skillAdminNamespaceMemberCannotReviewOwnSubmission() {
+        String userId = "user-1";
+        ReviewTask task = new ReviewTask(1L, 10L, userId);
+        assertFalse(checker.canReview(task, userId,
+                NamespaceType.TEAM, Map.of(10L, NamespaceRole.MEMBER), Set.of("SKILL_ADMIN")));
     }
 
     @Test
@@ -55,6 +79,24 @@ class ReviewPermissionCheckerTest {
         ReviewTask task = new ReviewTask(1L, 1L, userId);
         assertTrue(checker.canReview(task, userId,
                 NamespaceType.GLOBAL, Map.of(), Set.of("SUPER_ADMIN")));
+    }
+
+    @Test
+    void teamAdminCanReviewOwnTeamSubmission() {
+        String userId = "user-1";
+        ReviewTask task = new ReviewTask(1L, 10L, userId);
+        assertTrue(checker.canReview(task, userId,
+                NamespaceType.TEAM,
+                Map.of(10L, NamespaceRole.ADMIN), Set.of()));
+    }
+
+    @Test
+    void teamOwnerCanReviewOwnTeamSubmission() {
+        String userId = "user-1";
+        ReviewTask task = new ReviewTask(1L, 10L, userId);
+        assertTrue(checker.canReview(task, userId,
+                NamespaceType.TEAM,
+                Map.of(10L, NamespaceRole.OWNER), Set.of()));
     }
 
     @Test
@@ -192,10 +234,26 @@ class ReviewPermissionCheckerTest {
     }
 
     @Test
-    void cannotReviewOwnPromotion() {
+    void skillAdminCannotReviewOwnPromotion() {
         String userId = "user-2";
         PromotionRequest req = new PromotionRequest(1L, 1L, 1L, userId);
         assertFalse(checker.canReviewPromotion(req, userId,
                 Set.of("SKILL_ADMIN")));
+    }
+
+    @Test
+    void regularUserCannotReviewOwnPromotion() {
+        String userId = "user-2";
+        PromotionRequest req = new PromotionRequest(1L, 1L, 1L, userId);
+        assertFalse(checker.canReviewPromotion(req, userId,
+                Set.of()));
+    }
+
+    @Test
+    void superAdminCanReviewOwnPromotion() {
+        String userId = "user-2";
+        PromotionRequest req = new PromotionRequest(1L, 1L, 1L, userId);
+        assertTrue(checker.canReviewPromotion(req, userId,
+                Set.of("SUPER_ADMIN")));
     }
 }

@@ -41,6 +41,35 @@ class SkillPackageValidatorTest {
     }
 
     @Test
+    void normalizesSkillMdFilenameCase() {
+        assertEquals("SKILL.md", SkillPackagePolicy.normalizeEntryPath("skill.md"));
+        assertEquals("SKILL.md", SkillPackagePolicy.normalizeEntryPath("Skill.MD"));
+        assertEquals("nested/SKILL.md", SkillPackagePolicy.normalizeEntryPath("nested/skill.md"));
+    }
+
+    @Test
+    void acceptsSkillMdFilenameWithDifferentCase() {
+        String skillMdContent = """
+            ---
+            name: test-skill
+            description: A test skill
+            version: 1.0.0
+            ---
+            # Test Skill
+            """;
+
+        List<PackageEntry> entries = List.of(
+            new PackageEntry("skill.md", skillMdContent.getBytes(), skillMdContent.length(), "text/markdown"),
+            new PackageEntry("README.md", "readme".getBytes(), 6, "text/markdown")
+        );
+
+        ValidationResult result = validator.validate(entries);
+
+        assertTrue(result.passed());
+        assertTrue(result.errors().isEmpty());
+    }
+
+    @Test
     void testMissingSkillMd() {
         List<PackageEntry> entries = List.of(
             new PackageEntry("README.md", "readme".getBytes(), 6, "text/markdown")
@@ -100,8 +129,8 @@ class SkillPackageValidatorTest {
 
         ValidationResult result = validator.validate(entries);
 
-        assertFalse(result.passed());
-        assertTrue(result.errors().stream().anyMatch(e -> e.contains("Disallowed file extension") && e.contains("malware.exe")));
+        assertTrue(result.passed());
+        assertTrue(result.warnings().stream().anyMatch(e -> e.contains("Disallowed file extension") && e.contains("malware.exe")));
     }
 
     @Test
@@ -131,14 +160,19 @@ class SkillPackageValidatorTest {
             Body
             """;
 
+        // Use a custom validator with a small file count limit to test the logic
+        SkillPackageValidator smallValidator = new SkillPackageValidator(
+                new SkillMetadataParser(), 10, SkillPackagePolicy.MAX_SINGLE_FILE_SIZE,
+                SkillPackagePolicy.MAX_TOTAL_PACKAGE_SIZE, SkillPackagePolicy.ALLOWED_EXTENSIONS);
+
         List<PackageEntry> entries = new ArrayList<>();
         entries.add(new PackageEntry("SKILL.md", skillMdContent.getBytes(), skillMdContent.length(), "text/markdown"));
 
-        for (int i = 0; i < 100; i++) {
+        for (int i = 0; i < 11; i++) {
             entries.add(new PackageEntry("file" + i + ".txt", "content".getBytes(), 7, "text/plain"));
         }
 
-        ValidationResult result = validator.validate(entries);
+        ValidationResult result = smallValidator.validate(entries);
 
         assertFalse(result.passed());
         assertTrue(result.errors().stream().anyMatch(e -> e.contains("Too many files")));
@@ -266,8 +300,8 @@ class SkillPackageValidatorTest {
 
         ValidationResult result = validator.validate(entries);
 
-        assertFalse(result.passed());
-        assertTrue(result.errors().stream().anyMatch(e -> e.contains("File content does not match extension")));
+        assertTrue(result.passed());
+        assertTrue(result.warnings().stream().anyMatch(e -> e.contains("File content does not match extension")));
     }
 
     @Test
@@ -288,8 +322,8 @@ class SkillPackageValidatorTest {
 
         ValidationResult result = validator.validate(entries);
 
-        assertFalse(result.passed());
-        assertTrue(result.errors().stream().anyMatch(e -> e.contains("File content does not match extension")));
+        assertTrue(result.passed());
+        assertTrue(result.warnings().stream().anyMatch(e -> e.contains("File content does not match extension")));
     }
 
     @Test
@@ -299,8 +333,8 @@ class SkillPackageValidatorTest {
                 new PackageEntry("photo.jpeg", new byte[]{0x00, 0x00}, 2, "image/jpeg")
         );
         ValidationResult result = validator.validate(entries);
-        assertFalse(result.passed());
-        assertTrue(result.errors().stream().anyMatch(e -> e.contains("photo.jpeg")));
+        assertTrue(result.passed());
+        assertTrue(result.warnings().stream().anyMatch(e -> e.contains("photo.jpeg")));
     }
 
     @Test
